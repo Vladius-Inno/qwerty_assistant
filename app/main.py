@@ -9,7 +9,7 @@ class QueryRequest(BaseModel):
 
 @app.get("/")
 def root():
-    return {"fime": True}
+    return {"okay": True}
 
 @app.post("/query")
 def query(req: QueryRequest):
