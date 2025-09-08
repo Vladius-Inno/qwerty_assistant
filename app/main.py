@@ -1,17 +1,22 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from app.db.pool import connect_db, close_db
+from app.api import articles
+from contextlib import asynccontextmanager
+
 import os
 
-app = FastAPI(title="Research Assistant API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Подключаемся к базе
+    await connect_db()
+    yield
+    # Закрываем соединение
+    await close_db()
 
-class QueryRequest(BaseModel):
-    q: str
 
-@app.get("/")
-def root():
-    return {"OKAY": True}
+app = FastAPI(lifespan=lifespan)
+app.include_router(articles.router)
 
-@app.post("/query")
-def query(req: QueryRequest):
-    # Здесь будет вызов NLU -> dispatcher -> pipeline
-    return {"query": req.q, "result": "пока заглушка"}
+
+
