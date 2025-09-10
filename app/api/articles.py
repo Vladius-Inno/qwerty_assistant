@@ -35,19 +35,33 @@ async def api_list_articles(limit: int = 20, offset: int = 0,
                                    tag=tag, date_from=date_from, date_to=date_to, q=q)
     return rows
 
-@router.get("/search/keyword", response_model=List[SimpleArticle])
-async def api_search_keyword(q: str = Query(...), limit: int = 10):
-    rows = await svc.search_articles_keyword(q, limit=limit)
-    return rows
+@router.get("/search/keywords")
+async def api_search_keywords(
+    keyword: Optional[List[str]] = Query(None, description="Повторяющийся параметр, например ?keyword=космос&keyword=галактика"),
+    q: Optional[str] = Query(None, description="Альтернатива: список через запятую 'космос,галактика'"),
+    mode: str = Query("any", regex="^(any|all)$"),
+    partial: bool = Query(False),
+    limit: int = Query(20, ge=1, le=200),
+):
+    # Нормализуем вход: либо keyword=... multiple, либо q csv
+    if keyword:
+        kws = keyword
+    elif q:
+        kws = [s.strip() for s in q.split(",") if s.strip()]
+    else:
+        return {"error": "no keywords provided", "result": []}
 
-@router.post("/search/semantic", response_model=List[SimpleArticle])
-async def api_search_semantic(embedding: List[float], limit: int = 10):
-    """
-    Вход: embedding как список float (который обычно вычисляет OpenAI).
-    Возвращает ближайшие статьи.
-    """
-    rows = await svc.search_articles_semantic(embedding, limit=limit)
-    return rows
+    results = await svc.search_by_keywords(kws, mode=mode, partial=partial, limit=limit)
+    return {"query": kws, "mode": mode, "partial": partial, "count": len(results), "result": results}
+
+# @router.post("/search/semantic", response_model=List[SimpleArticle])
+# async def api_search_semantic(embedding: List[float], limit: int = 10):
+#     """
+#     Вход: embedding как список float (который обычно вычисляет OpenAI).
+#     Возвращает ближайшие статьи.
+#     """
+#     rows = await svc.search_articles_semantic(embedding, limit=limit)
+#     return rows
 
 
 @router.get("/{article_id}/related", response_model=List[SimpleArticle])

@@ -114,44 +114,129 @@ async def get_articles_by_period(start_date: str, end_date: str) -> List[dict]:
         return [dict(r) for r in rows]
 
 
-# ---------- Поиск ----------
-async def search_articles_keyword(q: str, limit: int = 10) -> List[dict]:
-    sql = """
-    SELECT id, title, date
-    FROM articles
-    WHERE title ILIKE $1 OR body ILIKE $1
-    ORDER BY date DESC
-    LIMIT $2
+# ---------- Поиск по ключевым словам ----------
+async def search_by_keywords(
+    keywords: List[str],
+    mode: str = "any",        # "any" или "all"
+    partial: bool = False,    # False = exact (case-insensitive), True = substring (ILIKE)
+    limit: int = 20,
+) -> List[Dict]:
     """
+    Search articles by keywords table.
+    - keywords: список слов (например ["космос","галактика"])
+    - mode: "any" или "all"
+    - partial: если True — ищем как ILIKE '%kw%', иначе точное сравнение по lower()
+    """
+
+# Поведение и точности
+# partial=False + mode=any — быстро и строго (совпадение по слову, но без учёта регистра).
+# partial=True — медленнее, но гибче; лучше использовать вместе с pg_trgm.
+# mode=all — полезно, когда хочешь статьи, которые упоминают все термины.
+
+    if not keywords:
+        return []
+
+    # Нормализация: убираем пустые, тримим
+    kws = [k.strip() for k in keywords if k and k.strip()]
+    if not kws:
+        return []
+
     p = pool()
     async with p.acquire() as conn:
-        rows = await conn.fetch(sql, f"%{q}%", limit)
-        return [dict(r) for r in rows]
+        if not partial:
+            # exact (case-insensitive) — используем lower(keyword) = ANY(...)
+            kws_lower = [k.lower() for k in kws]
 
+            if mode == "any":
+                sql = """
+                SELECT DISTINCT a.id, a.title, a.date
+                FROM articles a
+                JOIN keywords k ON k.article_id = a.id
+                WHERE lower(k.keyword) = ANY($1::text[])
+                ORDER BY a.date DESC
+                LIMIT $2;
+                """
+                rows = await conn.fetch(sql, kws_lower, limit)
+                return [dict(r) for r in rows]
+
+            else:  # mode == "all"
+                # нам нужно чтобы для статьи был найден весь набор слов
+                needed = len(set(kws_lower))
+                sql = """
+                SELECT a.id, a.title, a.date
+                FROM articles a
+                JOIN keywords k ON k.article_id = a.id
+                WHERE lower(k.keyword) = ANY($1::text[])
+                GROUP BY a.id, a.title, a.date
+                HAVING COUNT(DISTINCT lower(k.keyword)) >= $2
+                ORDER BY a.date DESC
+                LIMIT $3;
+                """
+                rows = await conn.fetch(sql, kws_lower, needed, limit)
+                return [dict(r) for r in rows]
+
+        else:
+            # partial = True -> ищем по паттернам '%kw%'
+            patterns = [f"%{k}%" for k in kws]
+
+            if mode == "any":
+                # EXISTS + unnest позволяет пользоваться массивом шаблонов
+                sql = """
+                SELECT DISTINCT a.id, a.title, a.date
+                FROM articles a
+                JOIN keywords k ON k.article_id = a.id
+                WHERE EXISTS (
+                  SELECT 1 FROM unnest($1::text[]) AS patt WHERE k.keyword ILIKE patt
+                )
+                ORDER BY a.date DESC
+                LIMIT $2;
+                """
+                rows = await conn.fetch(sql, patterns, limit)
+                return [dict(r) for r in rows]
+
+            else:
+                # mode == "all": для каждой статьи считаем, сколько шаблонов нашли среди её ключевых слов
+                # и сравниваем с требуемым количеством
+                needed = len(set(patterns))
+                sql = """
+                SELECT a.id, a.title, a.date
+                FROM articles a
+                WHERE (
+                  SELECT COUNT(DISTINCT patt)
+                  FROM unnest($1::text[]) AS patt
+                  WHERE EXISTS (
+                    SELECT 1 FROM keywords k WHERE k.article_id = a.id AND k.keyword ILIKE patt
+                  )
+                ) >= $2
+                ORDER BY a.date DESC
+                LIMIT $3;
+                """
+                rows = await conn.fetch(sql, patterns, needed, limit)
+                return [dict(r) for r in rows]
 
 # ---------- Семантический поиск (требует эмбеддинг запроса) ----------
 def _vec_to_pg_literal(vec: List[float]) -> str:
     # Преобразует Python list в Postgres vector literal: '[0.1,0.2,...]'
     return "[" + ",".join(map(str, vec)) + "]"
 
-async def search_articles_semantic(embedding: List[float], limit: int = 10) -> List[dict]:
-    """
-    Семантический поиск по эмбеддингу.
-    Важно: driver/adapter может потребовать регистрировать vector-тип.
-    Мы передаём literal и используем ::vector каст.
-    """
-    v_lit = _vec_to_pg_literal(embedding)
-    sql = f"""
-    SELECT a.id, a.title, a.date
-    FROM article_embeddings e
-    JOIN articles a ON a.id = e.article_id
-    ORDER BY e.embedding <-> $1::vector
-    LIMIT $2
-    """
-    p = pool()
-    async with p.acquire() as conn:
-        rows = await conn.fetch(sql, v_lit, limit)
-        return [dict(r) for r in rows]
+# async def search_articles_semantic(embedding: List[float], limit: int = 10) -> List[dict]:
+#     """
+#     Семантический поиск по эмбеддингу.
+#     Важно: driver/adapter может потребовать регистрировать vector-тип.
+#     Мы передаём literal и используем ::vector каст.
+#     """
+#     v_lit = _vec_to_pg_literal(embedding)
+#     sql = f"""
+#     SELECT a.id, a.title, a.date
+#     FROM article_embeddings e
+#     JOIN articles a ON a.id = e.article_id
+#     ORDER BY e.embedding <-> $1::vector
+#     LIMIT $2
+#     """
+#     p = pool()
+#     async with p.acquire() as conn:
+#         rows = await conn.fetch(sql, v_lit, limit)
+#         return [dict(r) for r in rows]
 
 
 # ---------- Связанные статьи ----------
@@ -186,7 +271,7 @@ async def get_related_articles(article_id: int, method: str = "semantic", top_n:
         else:
             # keywords/tags based:
             sql = """
-            SELECT a.id, a.title, COUNT(*) as score
+            SELECT a.id, a.title, a.date, COUNT(*) as score
             FROM keywords k
             JOIN articles a ON a.id = k.article_id
             WHERE k.keyword IN (
