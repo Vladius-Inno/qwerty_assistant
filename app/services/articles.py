@@ -1,48 +1,126 @@
 # app/services/articles.py
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Any, Tuple
 from app.db.pool import pool
-import asyncio
 from datetime import date
+from app.models.schemas import ArticleFull
 import json
 
 # -----------------------
 # НИЖЕ — функции чтения
 # -----------------------
 
-async def get_article(article_id: int) -> Optional[dict]:
+async def get_article(article_id: int) -> Optional[ArticleFull]:
     """
-    Вернуть полную статью по id (включая body и метаданные).
+    Вернуть полную статью по id (ArticleFull) вместе с topic_name, keywords, tags, summary.
+    Используем подзапросы, чтобы не делать GROUP BY и не потерять поля.
     """
     sql = """
-    SELECT id, title, body, date, source_link, article_link, raw_json, release_number, extra_links, created_at, topic_id
-    FROM articles
-    WHERE id = $1
+    SELECT
+      a.id,
+      a.title,
+      a.body,
+      a.date,
+      a.source_link,
+      a.article_link,
+      a.release_number,
+      -- topic name через article_topics -> topic_dictionary
+      (
+        SELECT td.name
+        FROM article_topics at
+        JOIN topic_dictionary td ON td.id = at.topic_id
+        WHERE at.article_id = a.id
+        LIMIT 1
+      ) AS topic_name,
+      -- keywords as text[]
+      COALESCE(
+        (SELECT array_agg(k.keyword) FROM keywords k WHERE k.article_id = a.id),
+        ARRAY[]::text[]
+      ) AS keywords,
+      -- tags as text[]
+      COALESCE(
+        (SELECT array_agg(t.name)
+         FROM tags t
+         JOIN article_tags at ON at.tag_id = t.id
+         WHERE at.article_id = a.id),
+        ARRAY[]::text[]
+      ) AS tags,
+      -- latest summary (if any)
+      (SELECT s.summary FROM summaries s WHERE s.article_id = a.id ORDER BY s.id DESC LIMIT 1) AS summary,
+      a.extra_links
+    FROM articles a
+    WHERE a.id = $1
     """
     p = pool()
     async with p.acquire() as conn:
         row = await conn.fetchrow(sql, article_id)
+        if not row:
+            return None
+
+        # asyncpg Row -> dict
         article = dict(row)
-        if isinstance(article.get("extra_links"), str):
+
+        # keywords/tags: гарантируем список строк (asyncpg возвращает list или None)
+        kws = article.get("keywords")
+        if kws is None:
+            article["keywords"] = []
+        else:
+            # если это already a list of bytes/str, convert to str
+            article["keywords"] = [str(x) for x in kws]
+
+        tgs = article.get("tags")
+        if tgs is None:
+            article["tags"] = []
+        else:
+            article["tags"] = [str(x) for x in tgs]
+
+        # extra_links может быть dict (jsonb) или строка -> приводим к dict
+        extra = article.get("extra_links")
+        if isinstance(extra, str):
             try:
-                article["extra_links"] = json.loads(article["extra_links"])
-            except json.JSONDecodeError:
+                article["extra_links"] = json.loads(extra)
+            except Exception:
                 article["extra_links"] = {}
-        return article if article else None
+        elif extra is None:
+            article["extra_links"] = {}
+        # если extra уже dict — оставляем как есть
 
+        # summary может быть None; ArticleFull.summary (в наследуемой модели) — Optional
+        # Вернём Pydantic-модель
+        return ArticleFull(**article)
 
-async def get_article_metadata(article_id: int) -> Optional[dict]:
-    """
-    Быстрая мета-информация (без тела).
-    """
-    sql = """
-    SELECT id, title, date, source_link, article_link, release_number, topic_id, extra_links
-    FROM articles
-    WHERE id = $1
-    """
-    p = pool()
-    async with p.acquire() as conn:
-        row = await conn.fetchrow(sql, article_id)
-        return dict(row) if row else None
+# async def get_article(article_id: int) -> Optional[dict]:
+#     """
+#     Вернуть полную статью по id (включая body и метаданные).
+#     """
+#     sql = """
+#     SELECT id, title, body, date, source_link, article_link, raw_json, release_number, extra_links, created_at, topic_id
+#     FROM articles
+#     WHERE id = $1
+#     """
+#     p = pool()
+#     async with p.acquire() as conn:
+#         row = await conn.fetchrow(sql, article_id)
+#         article = dict(row)
+#         if isinstance(article.get("extra_links"), str):
+#             try:
+#                 article["extra_links"] = json.loads(article["extra_links"])
+#             except json.JSONDecodeError:
+#                 article["extra_links"] = {}
+#         return article if article else None
+
+# async def get_article_metadata(article_id: int) -> Optional[dict]:
+#     """
+#     Быстрая мета-информация (без тела).
+#     """
+#     sql = """
+#     SELECT id, title, date, source_link, article_link, release_number, topic_id, extra_links
+#     FROM articles
+#     WHERE id = $1
+#     """
+#     p = pool()
+#     async with p.acquire() as conn:
+#         row = await conn.fetchrow(sql, article_id)
+#         return dict(row) if row else None
 
 
 async def list_articles(limit: int = 20, offset: int = 0,
@@ -101,143 +179,23 @@ async def list_articles(limit: int = 20, offset: int = 0,
         return [dict(r) for r in rows]
 
 
-async def get_articles_by_period(start_date: str, end_date: str) -> List[dict]:
-    sql = """
-    SELECT id, title, date
-    FROM articles
-    WHERE date BETWEEN $1 AND $2
-    ORDER BY date
-    """
-    p = pool()
-    async with p.acquire() as conn:
-        rows = await conn.fetch(sql, start_date, end_date)
-        return [dict(r) for r in rows]
+# async def get_articles_by_period(start_date: str, end_date: str) -> List[dict]:
+#     sql = """
+#     SELECT id, title, date
+#     FROM articles
+#     WHERE date BETWEEN $1 AND $2
+#     ORDER BY date
+#     """
+#     p = pool()
+#     async with p.acquire() as conn:
+#         rows = await conn.fetch(sql, start_date, end_date)
+#         return [dict(r) for r in rows]
 
-
-# ---------- Поиск по ключевым словам ----------
-async def search_by_keywords(
-    keywords: List[str],
-    mode: str = "any",        # "any" или "all"
-    partial: bool = False,    # False = exact (case-insensitive), True = substring (ILIKE)
-    limit: int = 20,
-) -> List[Dict]:
-    """
-    Search articles by keywords table.
-    - keywords: список слов (например ["космос","галактика"])
-    - mode: "any" или "all"
-    - partial: если True — ищем как ILIKE '%kw%', иначе точное сравнение по lower()
-    """
-
-# Поведение и точности
-# partial=False + mode=any — быстро и строго (совпадение по слову, но без учёта регистра).
-# partial=True — медленнее, но гибче; лучше использовать вместе с pg_trgm.
-# mode=all — полезно, когда хочешь статьи, которые упоминают все термины.
-
-    if not keywords:
-        return []
-
-    # Нормализация: убираем пустые, тримим
-    kws = [k.strip() for k in keywords if k and k.strip()]
-    if not kws:
-        return []
-
-    p = pool()
-    async with p.acquire() as conn:
-        if not partial:
-            # exact (case-insensitive) — используем lower(keyword) = ANY(...)
-            kws_lower = [k.lower() for k in kws]
-
-            if mode == "any":
-                sql = """
-                SELECT DISTINCT a.id, a.title, a.date
-                FROM articles a
-                JOIN keywords k ON k.article_id = a.id
-                WHERE lower(k.keyword) = ANY($1::text[])
-                ORDER BY a.date DESC
-                LIMIT $2;
-                """
-                rows = await conn.fetch(sql, kws_lower, limit)
-                return [dict(r) for r in rows]
-
-            else:  # mode == "all"
-                # нам нужно чтобы для статьи был найден весь набор слов
-                needed = len(set(kws_lower))
-                sql = """
-                SELECT a.id, a.title, a.date
-                FROM articles a
-                JOIN keywords k ON k.article_id = a.id
-                WHERE lower(k.keyword) = ANY($1::text[])
-                GROUP BY a.id, a.title, a.date
-                HAVING COUNT(DISTINCT lower(k.keyword)) >= $2
-                ORDER BY a.date DESC
-                LIMIT $3;
-                """
-                rows = await conn.fetch(sql, kws_lower, needed, limit)
-                return [dict(r) for r in rows]
-
-        else:
-            # partial = True -> ищем по паттернам '%kw%'
-            patterns = [f"%{k}%" for k in kws]
-
-            if mode == "any":
-                # EXISTS + unnest позволяет пользоваться массивом шаблонов
-                sql = """
-                SELECT DISTINCT a.id, a.title, a.date
-                FROM articles a
-                JOIN keywords k ON k.article_id = a.id
-                WHERE EXISTS (
-                  SELECT 1 FROM unnest($1::text[]) AS patt WHERE k.keyword ILIKE patt
-                )
-                ORDER BY a.date DESC
-                LIMIT $2;
-                """
-                rows = await conn.fetch(sql, patterns, limit)
-                return [dict(r) for r in rows]
-
-            else:
-                # mode == "all": для каждой статьи считаем, сколько шаблонов нашли среди её ключевых слов
-                # и сравниваем с требуемым количеством
-                needed = len(set(patterns))
-                sql = """
-                SELECT a.id, a.title, a.date
-                FROM articles a
-                WHERE (
-                  SELECT COUNT(DISTINCT patt)
-                  FROM unnest($1::text[]) AS patt
-                  WHERE EXISTS (
-                    SELECT 1 FROM keywords k WHERE k.article_id = a.id AND k.keyword ILIKE patt
-                  )
-                ) >= $2
-                ORDER BY a.date DESC
-                LIMIT $3;
-                """
-                rows = await conn.fetch(sql, patterns, needed, limit)
-                return [dict(r) for r in rows]
 
 # ---------- Семантический поиск (требует эмбеддинг запроса) ----------
 def _vec_to_pg_literal(vec: List[float]) -> str:
     # Преобразует Python list в Postgres vector literal: '[0.1,0.2,...]'
     return "[" + ",".join(map(str, vec)) + "]"
-
-# async def search_articles_semantic(embedding: List[float], limit: int = 10) -> List[dict]:
-#     """
-#     Семантический поиск по эмбеддингу.
-#     Важно: driver/adapter может потребовать регистрировать vector-тип.
-#     Мы передаём literal и используем ::vector каст.
-#     """
-#     v_lit = _vec_to_pg_literal(embedding)
-#     sql = f"""
-#     SELECT a.id, a.title, a.date
-#     FROM article_embeddings e
-#     JOIN articles a ON a.id = e.article_id
-#     ORDER BY e.embedding <-> $1::vector
-#     LIMIT $2
-#     """
-#     p = pool()
-#     async with p.acquire() as conn:
-#         rows = await conn.fetch(sql, v_lit, limit)
-#         return [dict(r) for r in rows]
-
 
 # ---------- Связанные статьи ----------
 async def get_related_articles(article_id: int, method: str = "semantic", top_n:int = 10) -> List[dict]:

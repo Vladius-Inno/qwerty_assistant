@@ -4,25 +4,40 @@ from typing import Optional, List, Dict, Any
 from datetime import date
 import json
 
+
+# --- Базовые сокращённые данные об статье ---
+# Используется для list-запросов, таймлайнов, выдачи последних статей и похожих
+class SimpleArticle(BaseModel):
+    id: int
+    title: str
+    date: date
+
+
+# --- Метаданные статьи ---
+# Используется для комбинированного поиска, поиска по ключевым словам, list с фильтрами
 class ArticleMeta(BaseModel):
     id: int
     title: str
     date: date
-    source_link: Optional[str]
-    article_link: Optional[str] = None
     release_number: Optional[int]
-    topic_id: Optional[int]
+    topic_name: Optional[str] = None
+    keywords: List[str] = []
+    tags: List[str] = []
+    summary: Optional[str] = None
 
     class Config:
         orm_mode = True
 
 
+# --- Полный формат статьи ---
+# Используется для get article по id
 class ArticleFull(ArticleMeta):
     body: str
-    extra_links: Optional[Dict[str, Any]]  # <-- важно
-    raw_json: Optional[dict]
+    source_link: Optional[str]
+    article_link: Optional[str] = None
+    extra_links: Optional[Dict[str, Any]]
 
-    @field_validator("raw_json", "extra_links", mode="before")
+    @field_validator("extra_links", mode="before")
     def parse_json_fields(cls, v):
         if isinstance(v, str):
             try:
@@ -30,9 +45,3 @@ class ArticleFull(ArticleMeta):
             except Exception:
                 return {}
         return v
-
-class SimpleArticle(BaseModel):
-    id: int
-    title: str
-    date: date
-
