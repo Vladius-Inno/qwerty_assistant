@@ -273,6 +273,7 @@ async def get_related_articles(article_id: int, method: str = "semantic", top_n:
             return [dict(r) for r in rows]
 
 
+
 # ---------- ТАЙМЛАЙН по теме ----------
 async def get_topic_timeline(topic_name: str, granularity: str = "month") -> List[Tuple[str,int]]:
     """
