@@ -2,7 +2,7 @@
 from typing import Optional, List, Any, Tuple
 from app.db.pool import pool
 from datetime import date
-from app.models.schemas import ArticleFull
+from app.models.schemas import ArticleFull, ArticleMeta
 import json
 
 # -----------------------
@@ -227,7 +227,7 @@ def _vec_to_pg_literal(vec: List[float]) -> str:
     return "[" + ",".join(map(str, vec)) + "]"
 
 # ---------- Связанные статьи ----------
-async def get_related_articles(article_id: int, method: str = "semantic", top_n:int = 10) -> List[dict]:
+async def get_related_articles(article_id: int, method: str = "semantic", top_n:int = 10) -> List[ArticleMeta]:
     """
     Если method == semantic: берём embedding этой статьи и ищем ближайшие (кроме самой).
     Если method == keywords: ищем по общим keywords/tags.
@@ -245,7 +245,7 @@ async def get_related_articles(article_id: int, method: str = "semantic", top_n:
             else:
                 v_lit = str(emb)
             sql = """
-            SELECT a.id, a.title, a.date, e.embedding <-> $1::vector AS score
+            SELECT a.id, a.title, a.date, a.release_number, e.embedding <-> $1::vector AS score
             FROM article_embeddings e
             JOIN articles a ON a.id = e.article_id
             WHERE e.article_id <> $2
@@ -253,12 +253,12 @@ async def get_related_articles(article_id: int, method: str = "semantic", top_n:
             LIMIT $3
             """
             rows = await conn.fetch(sql, v_lit, article_id, top_n)
-            return [dict(r) for r in rows]
+            return [ArticleMeta(**dict(r)) for r in rows]
 
         else:
             # keywords/tags based:
             sql = """
-            SELECT a.id, a.title, a.date, COUNT(*) as score
+            SELECT a.id, a.title, a.date, a.release_number, COUNT(*) as score
             FROM keywords k
             JOIN articles a ON a.id = k.article_id
             WHERE k.keyword IN (
@@ -270,8 +270,7 @@ async def get_related_articles(article_id: int, method: str = "semantic", top_n:
             """
             rows = await conn.fetch(sql, article_id, top_n)
 
-            return [dict(r) for r in rows]
-
+            return [ArticleMeta(**dict(r)) for r in rows]
 
 
 # ---------- ТАЙМЛАЙН по теме ----------

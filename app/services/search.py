@@ -2,6 +2,7 @@ import inspect
 import math
 from typing import List, Dict, Optional
 from app.db.pool import pool
+from app.models.schemas import ArticleMeta
 from app.services.embeddings import get_query_embedding
 import ast
 
@@ -11,7 +12,7 @@ async def combined_search(
     limit: int = 20,
     preselect: int = 200,    # сколько кандидатов взять по эмбеддингу (в БД)
     alpha: float = 0.7       # вклад эмбеддинга в финальный скор (1-alpha = вклад full-text)
-) -> List[Dict]:
+) -> List[ArticleMeta]:
     """
     Двухступенчатый поиск:
       1) берём N ближайших кандидатов по эмбеддингу (pgvector, ORDER BY distance)
@@ -47,7 +48,7 @@ async def combined_search(
         # 1) отбираем кандидатов по расстоянию (distance) — делаем вычисление в БД
         candidates = await conn.fetch(
             """
-            SELECT a.id, a.title, a.date,
+            SELECT a.id, a.title, a.date, a.release_number,
                    e.embedding <-> $1::vector AS distance
             FROM article_embeddings e
             JOIN articles a ON a.id = e.article_id
@@ -97,19 +98,22 @@ async def combined_search(
 
             final_score = alpha * emb_sim + (1.0 - alpha) * ft_norm
 
-            results.append({
-                "id": aid,
-                "title": r["title"],
-                "date": r["date"],
-                "distance": distance,
-                "emb_sim": emb_sim,
-                "ft_score": ft_raw,
-                "ft_score_norm": ft_norm,
-                "score": final_score
-            })
+            results.append(
+                ArticleMeta(
+                id=aid,
+                title=r["title"],
+                date=r["date"],
+                release_number=r["release_number"],
+                # "distance": distance,
+                # "emb_sim": emb_sim,
+                # "ft_score": ft_raw,
+                # "ft_score_norm": ft_norm,
+                score=final_score
+                )
+            )
 
         # сортируем финально и возвращаем топ-N
-        results.sort(key=lambda x: x["score"], reverse=True)
+        results.sort(key=lambda x: x.score, reverse=True)
         return results[:limit]
 
 # ---------- Поиск по ключевым словам ----------
