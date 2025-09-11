@@ -123,60 +123,89 @@ async def get_article(article_id: int) -> Optional[ArticleFull]:
 #         return dict(row) if row else None
 
 
-async def list_articles(limit: int = 20, offset: int = 0,
-                        topic_id: Optional[int] = None,
-                        tag: Optional[str] = None,
-                        date_from: Optional[date] = None,
-                        date_to: Optional[date] = None,
-                        q: Optional[str] = None,
-                        order_by: str = "date") -> List[dict]:
+async def list_articles(
+    limit: int = 20,
+    offset: int = 0,
+    topic: Optional[str] = None,
+    tag: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    q: Optional[str] = None,
+    order_by: str = "date",
+) -> List[dict]:
     """
     Удобная выборка со фильтрами.
+    - topic: название топика (string)
     - tag: название тега (string)
     - q: текстовый поиск по заголовку или body (ILIKE)
+    Возвращает статьи со списками tags, keywords и topics.
     """
     where = []
     args: List[Any] = []
     idx = 1
 
-    if topic_id is not None:
-        where.append(f"a.topic_id = ${idx}"); args.append(topic_id); idx += 1
+    if topic:
+        where.append(f"td.name = ${idx}")
+        args.append(topic)
+        idx += 1
 
+    # фильтр по тегу — через EXISTS
     if tag:
-        where.append(f"t.name = ${idx}"); args.append(tag); idx += 1
+        where.append(f"""
+            EXISTS (
+                SELECT 1 
+                FROM article_tags at2
+                JOIN tags t2 ON t2.id = at2.tag_id
+                WHERE at2.article_id = a.id AND t2.name = ${idx}
+            )
+        """)
+        args.append(tag)
+        idx += 1
 
     if date_from:
-        where.append(f"a.date >= ${idx}"); args.append(date_from); idx += 1
+        where.append(f"a.date >= ${idx}")
+        args.append(date_from)
+        idx += 1
 
     if date_to:
-        where.append(f"a.date <= ${idx}"); args.append(date_to); idx += 1
+        where.append(f"a.date <= ${idx}")
+        args.append(date_to)
+        idx += 1
 
     if q:
-        where.append(f"(a.title ILIKE ${idx} OR a.body ILIKE ${idx})"); args.append(f"%{q}%"); idx += 1
+        where.append(f"(a.title ILIKE ${idx} OR a.body ILIKE ${idx})")
+        args.append(f"%{q}%")
+        idx += 1
 
     where_sql = " AND ".join(where)
     if where_sql:
         where_sql = "WHERE " + where_sql
 
-    # join только если нужен тег
-    join_sql = ""
-    if tag:
-        join_sql = "JOIN article_tags at ON at.article_id = a.id JOIN tags t ON t.id = at.tag_id"
-
     sql = f"""
-    SELECT a.id, a.title, a.date, a.source_link, a.article_link, a.release_number, a.topic_id
-    FROM articles a
-    {join_sql}
-    {where_sql}
-    ORDER BY a.{order_by} DESC
-    LIMIT ${idx} OFFSET ${idx+1}
-    """
+        SELECT 
+            a.id, a.title, a.date, a.source_link, a.article_link, a.release_number,
+            COALESCE(array_agg(DISTINCT t.name) FILTER (WHERE t.id IS NOT NULL), '{{}}') AS tags,
+            COALESCE(array_agg(DISTINCT k.keyword) FILTER (WHERE k.keyword IS NOT NULL), '{{}}') AS keywords,
+            COALESCE(array_agg(DISTINCT td.name) FILTER (WHERE td.id IS NOT NULL), '{{}}') AS topics
+        FROM articles a
+        LEFT JOIN article_tags at ON at.article_id = a.id
+        LEFT JOIN tags t ON t.id = at.tag_id
+        LEFT JOIN keywords k ON k.article_id = a.id
+        LEFT JOIN article_topics atp ON atp.article_id = a.id
+        LEFT JOIN topic_dictionary td ON td.id = atp.topic_id
+        {where_sql}
+        GROUP BY a.id
+        ORDER BY a.{order_by} DESC
+        LIMIT ${idx} OFFSET ${idx + 1}
+        """
     args.extend([limit, offset])
 
     p = pool()
     async with p.acquire() as conn:
         rows = await conn.fetch(sql, *args)
+        # array_agg в asyncpg возвращается уже как list[str], так что кастовать не нужно
         return [dict(r) for r in rows]
+
 
 
 # async def get_articles_by_period(start_date: str, end_date: str) -> List[dict]:
@@ -216,11 +245,11 @@ async def get_related_articles(article_id: int, method: str = "semantic", top_n:
             else:
                 v_lit = str(emb)
             sql = """
-            SELECT a.id, a.title, a.date
+            SELECT a.id, a.title, a.date, e.embedding <-> $1::vector AS score
             FROM article_embeddings e
             JOIN articles a ON a.id = e.article_id
             WHERE e.article_id <> $2
-            ORDER BY e.embedding <-> $1::vector
+            ORDER BY score DESC
             LIMIT $3
             """
             rows = await conn.fetch(sql, v_lit, article_id, top_n)
@@ -240,6 +269,7 @@ async def get_related_articles(article_id: int, method: str = "semantic", top_n:
             LIMIT $2
             """
             rows = await conn.fetch(sql, article_id, top_n)
+
             return [dict(r) for r in rows]
 
 
