@@ -1,6 +1,6 @@
 # app/services/articles.py
-from typing import Optional, List, Any, Tuple
-from app.db.pool import pool
+from typing import Optional, List, Any, Tuple, Dict
+from app.db.pool import pool, close_db, connect_db
 from datetime import date
 from app.models.schemas import ArticleFull, ArticleMeta
 import json
@@ -88,40 +88,25 @@ async def get_article(article_id: int) -> Optional[ArticleFull]:
         # Вернём Pydantic-модель
         return ArticleFull(**article)
 
-# async def get_article(article_id: int) -> Optional[dict]:
-#     """
-#     Вернуть полную статью по id (включая body и метаданные).
-#     """
-#     sql = """
-#     SELECT id, title, body, date, source_link, article_link, raw_json, release_number, extra_links, created_at, topic_id
-#     FROM articles
-#     WHERE id = $1
-#     """
-#     p = pool()
-#     async with p.acquire() as conn:
-#         row = await conn.fetchrow(sql, article_id)
-#         article = dict(row)
-#         if isinstance(article.get("extra_links"), str):
-#             try:
-#                 article["extra_links"] = json.loads(article["extra_links"])
-#             except json.JSONDecodeError:
-#                 article["extra_links"] = {}
-#         return article if article else None
+async def fetch_articles(ids: List[int]) -> List[Dict]:
+    """
+    Возвращает список статей по их айди.
+    Для каждой статьи:
+      - id
+      - title
+      - body
+    """
+    query = """
+        SELECT id, title, body
+        FROM articles
+        WHERE id = ANY($1::int[])
+    """
+    await connect_db()
+    p = pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch(query, ids)
 
-# async def get_article_metadata(article_id: int) -> Optional[dict]:
-#     """
-#     Быстрая мета-информация (без тела).
-#     """
-#     sql = """
-#     SELECT id, title, date, source_link, article_link, release_number, topic_id, extra_links
-#     FROM articles
-#     WHERE id = $1
-#     """
-#     p = pool()
-#     async with p.acquire() as conn:
-#         row = await conn.fetchrow(sql, article_id)
-#         return dict(row) if row else None
-
+    return [dict(r) for r in rows]
 
 async def list_articles(
     limit: int = 20,
@@ -206,21 +191,6 @@ async def list_articles(
         # array_agg в asyncpg возвращается уже как list[str], так что кастовать не нужно
         return [dict(r) for r in rows]
 
-
-
-# async def get_articles_by_period(start_date: str, end_date: str) -> List[dict]:
-#     sql = """
-#     SELECT id, title, date
-#     FROM articles
-#     WHERE date BETWEEN $1 AND $2
-#     ORDER BY date
-#     """
-#     p = pool()
-#     async with p.acquire() as conn:
-#         rows = await conn.fetch(sql, start_date, end_date)
-#         return [dict(r) for r in rows]
-
-
 # ---------- Семантический поиск (требует эмбеддинг запроса) ----------
 def _vec_to_pg_literal(vec: List[float]) -> str:
     # Преобразует Python list в Postgres vector literal: '[0.1,0.2,...]'
@@ -245,9 +215,10 @@ async def get_related_articles(article_id: int, method: str = "semantic", top_n:
             else:
                 v_lit = str(emb)
             sql = """
-            SELECT a.id, a.title, a.date, a.release_number, e.embedding <-> $1::vector AS score
+            SELECT a.id, a.title, a.date, a.release_number, s.summary, e.embedding <-> $1::vector AS score
             FROM article_embeddings e
-            JOIN articles a ON a.id = e.article_id
+            LEFT JOIN articles a ON a.id = e.article_id
+            LEFT JOIN summaries s ON a.id = s.article_id
             WHERE e.article_id <> $2
             ORDER BY score DESC
             LIMIT $3
@@ -258,13 +229,14 @@ async def get_related_articles(article_id: int, method: str = "semantic", top_n:
         else:
             # keywords/tags based:
             sql = """
-            SELECT a.id, a.title, a.date, a.release_number, COUNT(*) as score
+            SELECT a.id, a.title, a.date, a.release_number, s.summary, COUNT(*) as score
             FROM keywords k
             JOIN articles a ON a.id = k.article_id
+            JOIN summaries s ON a.id = s.article_id
             WHERE k.keyword IN (
                 SELECT keyword FROM keywords WHERE article_id = $1
             ) AND a.id <> $1
-            GROUP BY a.id, a.title
+            GROUP BY a.id, a.title, s.summary
             ORDER BY score DESC
             LIMIT $2
             """
