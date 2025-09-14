@@ -199,9 +199,20 @@ def _vec_to_pg_literal(vec: List[float]) -> str:
 # ---------- Связанные статьи ----------
 async def get_related_articles(article_id: int, method: str = "semantic", top_n:int = 10) -> List[ArticleMeta]:
     """
-    Если method == semantic: берём embedding этой статьи и ищем ближайшие (кроме самой).
-    Если method == keywords: ищем по общим keywords/tags.
+        Находит статьи, связанные с указанной статьёй.
+
+        Args:
+            article_id (int): ID исходной статьи.
+            method (str, optional): Метод поиска связей:
+                - "semantic" — по близости embedding'ов текста (по смыслу).
+                - "keywords" — по совпадению ключевых слов/тегов.
+                По умолчанию: "semantic".
+            top_n (int, optional): Сколько наиболее релевантных статей вернуть. По умолчанию 10.
+
+        Returns:
+            List[ArticleMeta]: Список метаданных статей (id, title, summary и др.), связанных с исходной.
     """
+    await connect_db()
     p = pool()
     async with p.acquire() as conn:
         if method == "semantic":
