@@ -88,7 +88,7 @@ async def get_article(article_id: int) -> Optional[ArticleFull]:
         # Вернём Pydantic-модель
         return ArticleFull(**article)
 
-async def fetch_articles(ids: List[int]) -> List[Dict]:
+async def fetch_articles(ids: List[int]) -> Dict[str, Any]:
     """
     Возвращает список статей по их айди.
     Для каждой статьи:
@@ -106,7 +106,8 @@ async def fetch_articles(ids: List[int]) -> List[Dict]:
     async with p.acquire() as conn:
         rows = await conn.fetch(query, ids)
 
-    return [dict(r) for r in rows]
+    result= [dict(r) for r in rows]
+    return {i['id']: {"Заголовок": i['title'], "Полный текст статьи": i["body"]} for i in result}
 
 async def list_articles(
     limit: int = 20,

@@ -1,6 +1,7 @@
 # app/services/relations.py
 from typing import List, Dict, Any
 from app.db.pool import pool, connect_db, close_db
+from app.services.articles import _vec_to_pg_literal
 import json
 
 async def save_relations(relations: Dict):
@@ -48,6 +49,66 @@ async def save_relations(relations: Dict):
                     r.get("connection_text"),
                 )
 
+async def get_related_articles_agent(article_id: int, method: str = "semantic", top_n: int = 10) -> Dict[str, Any]:
+    """
+        Находит статьи, связанные с указанной статьёй.
+
+        Args:
+            article_id (int): ID исходной статьи.
+            method (str, optional): Метод поиска связей:
+                - "semantic" — по близости embedding'ов текста (по смыслу).
+                - "keywords" — по совпадению ключевых слов/тегов.
+                По умолчанию: "semantic".
+            top_n (int, optional): Сколько наиболее релевантных статей вернуть. По умолчанию 10.
+
+        Returns:
+            Словарь с id статей, связанных с исходной.
+    """
+    await connect_db()
+    p = pool()
+    async with p.acquire() as conn:
+        if method == "semantic":
+            emb_row = await conn.fetchrow("SELECT embedding FROM article_embeddings WHERE article_id = $1", article_id)
+            if not emb_row:
+                return []
+            emb = emb_row["embedding"]
+            # emb может приходить как список или как строка; приводим к строковому literal
+            if isinstance(emb, list):
+                v_lit = _vec_to_pg_literal(emb)
+            else:
+                v_lit = str(emb)
+            sql = """
+            SELECT a.id, e.embedding <-> $1::vector AS score
+            FROM article_embeddings e
+            LEFT JOIN articles a ON a.id = e.article_id
+            WHERE e.article_id <> $2
+            ORDER BY score ASC
+            LIMIT $3
+            """
+            rows = await conn.fetch(sql, v_lit, article_id, top_n)
+            result = [dict(r) for r in rows]
+            return {"related": [
+                {"id": i['id'], "score": i["score"]} for i in result
+            ]}
+
+        else:
+            # keywords/tags based:
+            sql = """
+            SELECT a.id, COUNT(*) as score
+            FROM keywords k
+            JOIN articles a ON a.id = k.article_id
+            WHERE k.keyword IN (
+                SELECT keyword FROM keywords WHERE article_id = $1
+            ) AND a.id <> $1
+            GROUP BY a.id
+            ORDER BY score DESC
+            LIMIT $2
+            """
+            rows = await conn.fetch(sql, article_id, top_n)
+            result = [dict(r) for r in rows]
+            return {"related": [
+                {"id": i['id'], "score": i["score"]} for i in result
+            ]}
 
 async def list_interesting_relations(kind: str = "rare", limit: int = 5) -> List[Dict[str, Any]]:
     """
