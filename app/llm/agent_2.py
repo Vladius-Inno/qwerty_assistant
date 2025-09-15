@@ -5,14 +5,126 @@ from typing import Any, Dict
 from openai import AsyncOpenAI
 from app.services.articles import fetch_articles
 from app.services.relations import get_related_articles_agent
+from app.services.search import combined_search_agent
 from pprint import pprint
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MODEL = 'gpt-5-mini'
+MAX_PREVIEW = 5
+
+def _safe_get(d, *keys, default=None):
+    for k in keys:
+        if isinstance(d, dict) and k in d:
+            return d[k]
+    return default
+
+def _format_result(result: Any, max_items: int = MAX_PREVIEW) -> str:
+    """Универсальный человекочитаемый форматтер для результатов функций агента."""
+    if result is None:
+        return "None"
+
+    # -------- DICT variants --------
+    if isinstance(result, dict):
+        # case: {"related": [ {id, score}, ... ]}
+        if "related" in result and isinstance(result["related"], list):
+            items = result["related"]
+            n = len(items)
+            preview = []
+            for it in items[:max_items]:
+                # it может быть dict или tuple-ish
+                if isinstance(it, dict):
+                    id_ = _safe_get(it, "id", "article_id", default=str(it))
+                    score = _safe_get(it, "score", "similarity", default=None)
+                else:
+                    id_, score = (str(it), None)
+                if isinstance(score, (int, float)):
+                    preview.append(f"{id_} (score={float(score):.3f})")
+                else:
+                    preview.append(str(id_))
+            more = "..." if n > max_items else ""
+            return f"Найдено {n} связанных статей: " + ", ".join(preview) + more
+
+        # case: fetch_articles -> { id: {"Заголовок": ..., "Полный текст статьи": ...}, ... }
+        values = list(result.values())
+        if values and isinstance(values[0], dict) and any(k in values[0] for k in ("Заголовок", "Полный текст статьи", "title", "body")):
+            n = len(result)
+            previews = []
+            for k, v in list(result.items())[:max_items]:
+                title = _safe_get(v, "Заголовок", "title", default="—")
+                body = _safe_get(v, "Полный текст статьи", "body", default="")
+                snippet = " ".join(body.splitlines())[:140]
+                previews.append(f"{k}: «{title}» — {snippet}{'...' if len(body) > 140 else ''}")
+            more = "..." if n > max_items else ""
+            return f"Получено {n} статей: " + " | ".join(previews) + more
+
+        # generic dict that looks like single article metadata: {"id": ..., "title": ..., "score": ...}
+        if "id" in result and any(k in result for k in ("title", "Заголовок", "score")):
+            title = _safe_get(result, "title", "Заголовок", default="—")
+            date = result.get("date")
+            score = _safe_get(result, "score", "similarity")
+            s = f"Статья {result.get('id')}: «{title}»"
+            if date:
+                s += f", {date}"
+            if isinstance(score, (int, float)):
+                s += f", score={float(score):.3f}"
+            return s
+
+        # fallback for dicts
+        keys = list(result.keys())[:10]
+        return f"Dict keys={keys} (size={len(result)})"
+
+    # -------- LIST variants --------
+    if isinstance(result, list):
+        if len(result) == 0:
+            return "Пустой список"
+
+        # list of dicts (обычно combined_search возвращает list[dict])
+        if all(isinstance(x, dict) for x in result):
+            # обнаруживаем статью-подобную структуру
+            sample = result[0]
+            if "id" in sample and any(k in sample for k in ("title", "score", "date")):
+                n = len(result)
+                preview = []
+                for it in result[:max_items]:
+                    id_ = _safe_get(it, "id", default="?")
+                    title = _safe_get(it, "title", "Заголовок", default="—")
+                    score = _safe_get(it, "score", default=None)
+                    if isinstance(score, (int, float)):
+                        preview.append(f"{id_}: «{title}» (score={float(score):.3f})")
+                    else:
+                        preview.append(f"{id_}: «{title}»")
+                more = "..." if n > max_items else ""
+                return f"Список из {n} статей: " + " | ".join(preview) + more
+
+            # generic list of dicts
+            return f"Список из {len(result)} словарей, пример ключей: {list(result[0].keys())}"
+
+        # list of ids
+        if all(isinstance(x, (int, str)) for x in result):
+            preview = result[:max_items]
+            more = "..." if len(result) > max_items else ""
+            return f"Список id ({len(result)}): {preview}{more}"
+
+        # fallback for other lists
+        preview = result[:max_items]
+        more = "..." if len(result) > max_items else ""
+        return f"Список из {len(result)} элементов, пример: {preview}{more}"
+
+    # -------- STR / other --------
+    if isinstance(result, str):
+        s = result.strip()
+        short = s[:300] + ("..." if len(s) > 300 else "")
+        return f"Текст (len={len(s)}): {short}"
+
+    # numbers, booleans, etc.
+    try:
+        return str(result)
+    except Exception:
+        return repr(result)
 
 def logged_function(fn):
+    """Логирующая обёртка: печатает человекочитаемый статус, но возвращает оригинал."""
     if inspect.iscoroutinefunction(fn):
-        # Обёртка для async функций
         async def wrapper(*args, **kwargs):
             pprint(f"\n[Function call] {fn.__name__}")
             if args:
@@ -21,11 +133,11 @@ def logged_function(fn):
                 pprint(f"  kwargs: {kwargs}")
 
             result = await fn(*args, **kwargs)
-            pprint(f"[Function result] {result}\n")
+            pretty = _format_result(result)
+            pprint(f"[Function result] {pretty}\n")
             return result
         return wrapper
     else:
-        # Обёртка для sync функций
         def wrapper(*args, **kwargs):
             pprint(f"\n[Function call] {fn.__name__}")
             if args:
@@ -34,16 +146,35 @@ def logged_function(fn):
                 pprint(f"  kwargs: {kwargs}")
 
             result = fn(*args, **kwargs)
-            pprint(f"[Function result] {result}\n")
+            pretty = _format_result(result)
+            pprint(f"[Function result] {pretty}\n")
             return result
         return wrapper
 
 FUNCTIONS = {
     "fetch_articles": logged_function(fetch_articles),
     "get_related_articles": logged_function(get_related_articles_agent),
+    "combined_search": logged_function(combined_search_agent)
 }
 
 TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "combined_search",
+            "description": "Ищет релевантные статьи по пользовательскому запросу (семантический поиск + full-text).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Запрос пользователя (тема, вопрос, ключевые слова)."},
+                    "limit": {"type": "integer", "description": "Сколько статей вернуть (по умолчанию 20)."},
+                    "preselect": {"type": "integer", "description": "Сколько кандидатов взять по эмбеддингу (по умолчанию 200)."},
+                    "alpha": {"type": "number", "description": "Вклад эмбеддинга в общий скор (0.0–1.0, по умолчанию 0.7)."},
+                },
+                "required": ["query"]
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -82,14 +213,18 @@ async def agent_loop(user_goal: str, max_turns: int = 5) -> str:
     history = [
         {"role": "system",
          "content": (
-             "Ты — автор научно-популярного блога. Используй доступные функции, чтобы глубоко анализировать статьи."
+             "Ты — помощник автора научно-популярного блога. Он пишет статьи для своего блога с 2017 года, выбирая только интересные ему события. "
+             "Используй доступные функции, чтобы работать с базой его статей."
              "Ограничения:"
+             f"- ты можешь сделать не более {max_turns-1} вызовов функций (например, поиска или получения связанных статей) за весь запуск, если тебе не хватает данных, остановись и дай ответ по имеющейся информации"
              "- ты не имеешь права делать выводы только на основе кратких описаний, всегда проверяй полный текст, в т.ч. оригинальной статьи"
-             "- когда пишешь текст для телеграм, делай короткий пост на 8–10 предложений, который развивает тему связи и сосредотачивается на самом важном и удивительном"
-             "- используй немного эмодзи, стиль должен быть увлекательный, но без излишней игривости-"
+             "- все запросы к функциям поиска (combined_search) нужно формировать на русском языке, так как база и индексы русскоязычные; старайся использовать короткие запросы"
+             "- разрешён только один основной поисковый запрос + при необходимости одно уточнение (не более 2 запросов подряд)"
+             "- когда пишешь текст для телеграм, делай короткий пост на 500-900 знаков, который развивает тему связи и сосредотачивается на самом важном и удивительном. Пиши заголовок / хук"
+             "- используй 2-4 эмодзи, стиль должен быть увлекательный, но без излишней игривости-"
              "- делай отсылки к годам исследований и оценивай развитие науки во времени"
              "- сохрани научную точность, но избегай сложных терминов, их лучше пояснять простыми словами"
-             "- избегай общих и восторженных выводов"
+             "- избегай восторженных выводов, но формулируй финальую мысль в духе развития науки"
             )
          },
         {"role": "user", "content": user_goal},
@@ -136,7 +271,7 @@ async def agent_loop(user_goal: str, max_turns: int = 5) -> str:
                             result = {"error": str(e)}
 
                 # Логируем результат
-                pprint(f"[Tool response] {fname} -> {result}")
+                # pprint(f"[Tool response] {fname} -> {result}")
 
                 tool_messages.append({
                     "role": "tool",
