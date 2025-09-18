@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "FastAPI: Uvicorn",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "main:app", // Replace 'main' and 'app' as needed
+                "--reload",
+                "--host", "127.0.0.1",
+                "--port", "8000"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true // Set to false for debugging installed libraries
+        }
+    ]
+}
