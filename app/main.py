@@ -1,21 +1,44 @@
-from fastapi import FastAPI
-from app.db.pool import connect_db, close_db
-from app.api import articles
 from contextlib import asynccontextmanager
 
+import logging
 import os
+
+from fastapi import FastAPI
+
+from app.api import articles
+from app.api import auth as auth_api
+from app.db.pool import close_db, connect_db
+from app.db.sa import close_sa_engine, init_sa_engine
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Подключаемся к базе
+    # Initialize asyncpg (existing services) and SQLAlchemy (auth)
     await connect_db()
-    yield
-    # Закрываем соединение
-    await close_db()
+    await init_sa_engine()
+    # Create tables for auth models if needed (idempotent)
+    try:
+        from app.db.base import Base
+        from app.models import auth_models  # noqa: F401 ensure model registration
+        from app.db.sa import _engine as _sa_engine  # type: ignore
+
+        if _sa_engine is not None:
+            async with _sa_engine.begin() as conn:  # type: ignore
+                await conn.run_sync(Base.metadata.create_all)
+    except Exception:
+        # If migrations are managed externally, ignore table creation errors
+        pass
+    try:
+        yield
+    finally:
+        await close_sa_engine()
+        await close_db()
 
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(articles.router)
+app.include_router(auth_api.router)
 
-
-
+# Basic logging configuration (can be overridden by server config)
+_LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=_LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
