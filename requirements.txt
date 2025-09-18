@@ -13,3 +13,5 @@ pydantic
 SQLAlchemy>=2.0
 passlib[bcrypt]>=1.7
 python-jose[cryptography]>=3.3
+bcrypt
+pydantic[email]
