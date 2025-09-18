@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/articles", tags=["articles"])
 #  Поисковые и утилитарные
 # -----------------------
 
-@router.get("/search", response_model=List[SimpleArticle],
+@router.get("/search", response_model=List[ArticleMeta],
             summary="Комбинированный семантико-текстовый поиск (stub)")
 async def search_articles(
     q: str = Query(..., description="Поисковый запрос"),
@@ -107,7 +107,7 @@ async def api_top_by_topic(topic_name: str, limit: int = 10):
 @router.get("/", response_model=List[ArticleMeta], response_model_exclude_none=True,
             summary="Список статей (расширённый формат — ArticleMeta)")
 async def api_list_articles(limit: int = 20, offset: int = 0,
-                            topic_id: Optional[int] = None,
+                            topic: Optional[str] = None,
                             tag: Optional[str] = None,
                             date_from: Optional[date] = None,
                             date_to: Optional[date] = None,
@@ -115,7 +115,7 @@ async def api_list_articles(limit: int = 20, offset: int = 0,
     """
     Возвращает ArticleMeta (без body). Подходит для аналитики и для LLM, когда нужен контекст.
     """
-    rows = await svc.list_articles(limit=limit, offset=offset, topic_id=topic_id,
+    rows = await svc.list_articles(limit=limit, offset=offset, topic=topic,
                                    tag=tag, date_from=date_from, date_to=date_to, q=q)
     return rows
 
@@ -123,7 +123,7 @@ async def api_list_articles(limit: int = 20, offset: int = 0,
 #  Связанные и одиночные статьи — эти маршруты должны идти ПОСЛЕ статических путей
 # -----------------------
 
-@router.get("/{article_id}/related", response_model=List[SimpleArticle],
+@router.get("/{article_id}/related", response_model=List[ArticleMeta],
             summary="Похожие/связанные статьи (stub)")
 async def api_related(article_id: int, method: str = "semantic", top_n: int = 10):
     rows = await svc.get_related_articles(article_id, method=method, top_n=top_n)

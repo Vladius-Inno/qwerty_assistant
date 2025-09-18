@@ -11,6 +11,7 @@ class SimpleArticle(BaseModel):
     id: int
     title: str
     date: date
+    score: Optional[float] = None
 
 
 # --- Метаданные статьи ---
@@ -24,6 +25,7 @@ class ArticleMeta(BaseModel):
     keywords: List[str] = []
     tags: List[str] = []
     summary: Optional[str] = None
+    score: Optional[float] = None
 
     class Config:
         orm_mode = True
