@@ -355,7 +355,7 @@ def main(page: ft.Page):
         _hide_profile_menu()
         # ensure restoring indicator is hidden when showing auth
         restoring_box.visible = False
-        # restore spacers for auth screen by showing them (avoid zero-height containers)
+        # restore spacers for auth screen (use visibility instead of zero-height containers)
         top_spacer.visible = True
         auth_gap.visible = True
         page.update()
@@ -414,7 +414,7 @@ def main(page: ft.Page):
     password.on_submit = do_submit
 
     # Layout root with a top spacer that collapses on main view to bring tabs closer to the app bar
-    top_spacer = ft.Container(height=1)
+    top_spacer = ft.Container(height=10)
     auth_gap = ft.Container(height=10)
     root = ft.Column(
         controls=[top_spacer, logo, restoring_box, auth_gap, form, main_view],
