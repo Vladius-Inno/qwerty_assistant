@@ -1,11 +1,32 @@
 import inspect
 import math
 from typing import List, Dict, Optional
-from app.db.pool import pool
+from app.db.pool import pool, connect_db
 from app.models.schemas import ArticleMeta
 from app.services.embeddings import get_query_embedding
 import ast
 
+
+async def combined_search_agent(query: str, limit: int = 10, preselect: int = 200, alpha: float = 0.7) -> [dict]:
+    await connect_db()
+
+    try:
+        result = await combined_search(query, limit, preselect, alpha)
+    except Exception as e:
+        return {"error": str(e)}
+
+    result =  [
+        {
+            "id": r.id,
+            "title": r.title,
+            "date": r.date.isoformat() if hasattr(r.date, "isoformat") else r.date,
+            "score": r.score,
+            # "distance": r.distance,
+            # "ft_score_norm": r.ft_score_norm,
+        }
+        for r in result[:limit]
+    ]
+    return result
 
 async def combined_search(
     query: str,
