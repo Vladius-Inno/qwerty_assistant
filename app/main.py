@@ -6,6 +6,7 @@ import os
 from fastapi import FastAPI
 
 from app.api import articles
+from app.api import agent as agent_api
 from app.api import auth as auth_api
 from app.db.pool import close_db, connect_db
 from app.db.sa import close_sa_engine, init_sa_engine
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.include_router(articles.router)
 app.include_router(auth_api.router)
+app.include_router(agent_api.router)
 
 # Basic logging configuration (can be overridden by server config)
 _LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
