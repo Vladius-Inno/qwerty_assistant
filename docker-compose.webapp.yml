@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  webapp:
+    build:
+      context: .
+      dockerfile: qwerty_webapp/Dockerfile
+    environment:
+      # Use internal service name by default; override in env if needed
+      - API_BASE_URL=${API_BASE_URL:-http://api:8000}
+      # Ensure Flet server binds externally in container
+      - FLET_SERVER_PORT=8080
+      - FLET_SERVER_IP=0.0.0.0
+    ports:
+      - "8080:8080"
+    restart: unless-stopped

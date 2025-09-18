@@ -25,11 +25,11 @@ jobs:
             git fetch --all
             git reset --hard origin/main
 
-            echo ">>> Rebuilding Docker images"
-            docker compose build --no-cache
+            echo ">>> Rebuilding Docker images (API + Webapp)"
+            docker compose -f docker-compose.yml -f docker-compose.webapp.yml build --no-cache
 
-            echo ">>> Restarting containers"
-            docker compose down
-            docker compose up -d
+            echo ">>> Restarting containers (API + Webapp)"
+            docker compose -f docker-compose.yml -f docker-compose.webapp.yml down
+            docker compose -f docker-compose.yml -f docker-compose.webapp.yml up -d
 
             echo ">>> Deployment finished!"
