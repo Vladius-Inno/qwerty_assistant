@@ -13,7 +13,11 @@ class AuthClient:
         set_refresh_token: Callable[[Optional[str]], None],
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self._client = httpx.Client(base_url=self.base_url, timeout=10.0)
+        # Use generous default timeouts; long LLM/agent flows can exceed 10s easily
+        self._client = httpx.Client(
+            base_url=self.base_url,
+            timeout=httpx.Timeout(connect=10.0, read=300.0, write=120.0, pool=60.0),
+        )
         self._access_token: Optional[str] = None
         self._get_refresh_token = get_refresh_token
         self._set_refresh_token = set_refresh_token
@@ -128,12 +132,20 @@ class AuthClient:
         return resp.json()
 
     # --- Internal helper for protected calls ---
-    def _protected_request(self, method: str, path: str, *, json: dict | None = None, params: dict | None = None) -> httpx.Response:
+    def _protected_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict | None = None,
+        params: dict | None = None,
+        timeout: float | httpx.Timeout | None = None,
+    ) -> httpx.Response:
         headers = self._auth_headers()
-        resp = self._client.request(method, path, headers=headers, json=json, params=params)
+        resp = self._client.request(method, path, headers=headers, json=json, params=params, timeout=timeout)
         if resp.status_code == 401 and self.refresh():
             headers = self._auth_headers()
-            resp = self._client.request(method, path, headers=headers, json=json, params=params)
+            resp = self._client.request(method, path, headers=headers, json=json, params=params, timeout=timeout)
         return resp
 
     # --- Agent API (protected) ---
@@ -177,10 +189,34 @@ class AuthClient:
         return resp.json()
 
     def agent_loop(self, user_goal: str, max_turns: int = 3) -> dict | None:
+        # Agent loops can run long; disable request timeouts to avoid client-side aborts
         resp = self._protected_request(
             "POST",
             "/api/agent/agent-loop",
             json={"user_goal": user_goal, "max_turns": max_turns},
+            timeout=None,
+        )
+        if resp.status_code >= 400:
+            return None
+        return resp.json()
+
+    # --- Long-running agent job APIs ---
+    def agent_loop_start(self, user_goal: str, max_turns: int = 3) -> dict | None:
+        resp = self._protected_request(
+            "POST",
+            "/api/agent/agent-loop/start",
+            json={"user_goal": user_goal, "max_turns": max_turns},
+            timeout=30.0,
+        )
+        if resp.status_code >= 400:
+            return None
+        return resp.json()
+
+    def agent_loop_status(self, job_id: str) -> dict | None:
+        resp = self._protected_request(
+            "GET",
+            f"/api/agent/agent-loop/status/{job_id}",
+            timeout=15.0,
         )
         if resp.status_code >= 400:
             return None

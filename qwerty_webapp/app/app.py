@@ -320,14 +320,35 @@ def main(page: ft.Page):
 
     async def run_agent_task(prompt: str):
         try:
-            resp = await asyncio.to_thread(client.agent_loop, prompt, 3)
+            start_resp = await asyncio.to_thread(client.agent_loop_start, prompt, 3)
         except Exception as e:
-            add_message("agent", f"Error: {e}")
+            add_message("agent", f"Error starting job: {e}")
             set_sending(False)
             return
-        result = resp.get("result") if isinstance(resp, dict) else None
-        add_message("agent", str(result) if result else "No response.")
-        set_sending(False)
+        if not isinstance(start_resp, dict) or "job_id" not in start_resp:
+            add_message("agent", "Failed to start agent job.")
+            set_sending(False)
+            return
+        job_id = start_resp["job_id"]
+
+        # Poll status until done or error
+        try:
+            while True:
+                status_resp = await asyncio.to_thread(client.agent_loop_status, job_id)
+                if not isinstance(status_resp, dict):
+                    await asyncio.sleep(1.5)
+                    continue
+                status = status_resp.get("status")
+                if status == "done":
+                    result = status_resp.get("result")
+                    add_message("agent", str(result) if result else "No response.")
+                    break
+                if status == "error":
+                    add_message("agent", f"Error: {status_resp.get('error')}")
+                    break
+                await asyncio.sleep(1.5)
+        finally:
+            set_sending(False)
 
     def do_send(_):
         if sending:

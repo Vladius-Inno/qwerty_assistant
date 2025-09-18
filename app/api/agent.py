@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.api.auth import get_current_user
@@ -107,3 +107,80 @@ async def api_agent_loop(
     result = await agent_loop(user_goal=payload.user_goal, max_turns=payload.max_turns)
     return {"result": result}
 
+
+# ---------------- Background jobs for long agent loops ----------------
+
+import asyncio
+import uuid
+from datetime import datetime, timezone
+
+_JOBS: dict[str, dict] = {}
+
+
+class StartJobResponse(BaseModel):
+    job_id: str
+
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: str  # queued | running | done | error
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    result: Optional[dict | str] = None
+    error: Optional[str] = None
+
+
+@router.post("/agent-loop/start", response_model=StartJobResponse)
+async def api_agent_loop_start(
+    payload: AgentLoopRequest,
+    current_user: User = Depends(get_current_user),
+) -> StartJobResponse:
+    job_id = str(uuid.uuid4())
+    _JOBS[job_id] = {
+        "status": "queued",
+        "result": None,
+        "error": None,
+        "started_at": None,
+        "finished_at": None,
+        "user_id": str(current_user.id),
+    }
+
+    async def _runner():
+        j = _JOBS.get(job_id)
+        if j is None:
+            return
+        j["status"] = "running"
+        j["started_at"] = datetime.now(timezone.utc)
+        try:
+            res = await agent_loop(user_goal=payload.user_goal, max_turns=payload.max_turns)
+            j["result"] = res
+            j["status"] = "done"
+        except Exception as e:
+            j["error"] = str(e)
+            j["status"] = "error"
+        finally:
+            j["finished_at"] = datetime.now(timezone.utc)
+
+    asyncio.create_task(_runner())
+    return StartJobResponse(job_id=job_id)
+
+
+@router.get("/agent-loop/status/{job_id}", response_model=JobStatusResponse)
+async def api_agent_loop_status(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+) -> JobStatusResponse:
+    j = _JOBS.get(job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="Job not found")
+    # Optional: enforce ownership
+    # if j.get("user_id") != str(current_user.id):
+    #     raise HTTPException(status_code=404, detail="Job not found")
+    return JobStatusResponse(
+        job_id=job_id,
+        status=j.get("status", "unknown"),
+        started_at=j.get("started_at"),
+        finished_at=j.get("finished_at"),
+        result=j.get("result"),
+        error=j.get("error"),
+    )
