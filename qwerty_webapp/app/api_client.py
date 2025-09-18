@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+from typing import Callable, Optional
+
+import httpx
+
+
+class AuthClient:
+    def __init__(
+        self,
+        base_url: str,
+        get_refresh_token: Callable[[], Optional[str]],
+        set_refresh_token: Callable[[Optional[str]], None],
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self._client = httpx.Client(base_url=self.base_url, timeout=10.0)
+        self._access_token: Optional[str] = None
+        self._get_refresh_token = get_refresh_token
+        self._set_refresh_token = set_refresh_token
+
+    # --- Token helpers ---
+    def _auth_headers(self) -> dict[str, str]:
+        if not self._access_token:
+            return {}
+        return {"Authorization": f"Bearer {self._access_token}"}
+
+    def set_tokens(self, access_token: str, refresh_token: Optional[str] = None) -> None:
+        self._access_token = access_token
+        if refresh_token is not None:
+            self._set_refresh_token(refresh_token)
+
+    def clear_tokens(self) -> None:
+        self._access_token = None
+        self._set_refresh_token(None)
+
+    # --- Auth actions ---
+    def register(self, email: str, password: str) -> None:
+        resp = self._client.post("/register", json={"email": email, "password": password})
+        if resp.status_code >= 400:
+            # Friendly messages for common cases
+            try:
+                data = resp.json()
+            except Exception:
+                data = None
+            if resp.status_code == 409:
+                raise Exception("Email already registered")
+            if resp.status_code == 422 and isinstance(data, dict):
+                detail = data.get("detail")
+                # Pydantic v2 error list -> craft readable text
+                if isinstance(detail, list):
+                    for err in detail:
+                        loc = err.get("loc", [])
+                        etype = err.get("type", "")
+                        msg = err.get("msg") or err.get("message")
+                        field = loc[-1] if loc else None
+                        if field == "password" and (etype == "string_too_short" or (isinstance(msg, str) and "least" in msg)):
+                            raise Exception("Password must be at least 8 characters")
+                        if field == "email":
+                            raise Exception("Please enter a valid email address")
+                # Generic fallback
+                raise Exception("Invalid registration data")
+            # Other errors: use provided detail or generic
+            if isinstance(data, dict):
+                d = data.get("detail")
+                if isinstance(d, str):
+                    raise Exception(d)
+            raise Exception(f"Registration failed: {resp.status_code}")
+        data = resp.json()
+        self.set_tokens(data["access_token"], data["refresh_token"])
+
+    def login(self, email: str, password: str) -> None:
+        resp = self._client.post("/login", json={"email": email, "password": password})
+        if resp.status_code >= 400:
+            try:
+                data = resp.json()
+            except Exception:
+                data = None
+            if resp.status_code == 422 and isinstance(data, dict):
+                detail = data.get("detail")
+                if isinstance(detail, list):
+                    for err in detail:
+                        loc = err.get("loc", [])
+                        field = loc[-1] if loc else None
+                        if field == "email":
+                            raise Exception("Please enter a valid email address")
+                        if field == "password":
+                            raise Exception("Please enter your password")
+                raise Exception("Invalid login data")
+            if isinstance(data, dict):
+                d = data.get("detail")
+                if isinstance(d, str):
+                    raise Exception(d)
+            raise Exception(f"Login failed: {resp.status_code}")
+        data = resp.json()
+        self.set_tokens(data["access_token"], data["refresh_token"])
+
+    def refresh(self) -> bool:
+        refresh_token = self._get_refresh_token()
+        if not refresh_token:
+            return False
+        resp = self._client.post("/refresh", json={"refresh_token": refresh_token})
+        if resp.status_code >= 400:
+            return False
+        data = resp.json()
+        # Rotate refresh token on success
+        self.set_tokens(data["access_token"], data.get("refresh_token"))
+        return True
+
+    def logout(self, all_sessions: bool = False) -> None:
+        headers = self._auth_headers()
+        refresh_token = self._get_refresh_token()
+        params = {"all_sessions": str(all_sessions).lower()}
+        payload = None if all_sessions else {"refresh_token": refresh_token} if refresh_token else None
+        resp = self._client.post("/logout", headers=headers, params=params, json=payload)
+        if resp.status_code < 400:
+            self.clear_tokens()
+
+    # --- Protected API call with auto-refresh ---
+    def get_me(self) -> dict | None:
+        headers = self._auth_headers()
+        resp = self._client.get("/me", headers=headers)
+        if resp.status_code == 401:
+            if self.refresh():
+                headers = self._auth_headers()
+                resp = self._client.get("/me", headers=headers)
+        if resp.status_code >= 400:
+            return None
+        return resp.json()

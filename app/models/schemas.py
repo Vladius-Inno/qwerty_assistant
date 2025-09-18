@@ -1,5 +1,5 @@
 # app/models/schemas.py
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, ConfigDict
 from typing import Optional, List, Dict, Any
 from datetime import date
 import json
@@ -26,9 +26,8 @@ class ArticleMeta(BaseModel):
     tags: List[str] = []
     summary: Optional[str] = None
     score: Optional[float] = None
-
-    class Config:
-        orm_mode = True
+    # Pydantic v2: enable ORM attribute parsing (replaces orm_mode=True)
+    model_config = ConfigDict(from_attributes=True)
 
 
 # --- Полный формат статьи ---

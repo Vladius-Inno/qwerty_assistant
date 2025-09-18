@@ -42,3 +42,5 @@ app.include_router(auth_api.router)
 # Basic logging configuration (can be overridden by server config)
 _LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=_LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# Suppress noisy bcrypt version warning from passlib when using bcrypt>=4
+logging.getLogger("passlib.handlers.bcrypt").setLevel(logging.ERROR)

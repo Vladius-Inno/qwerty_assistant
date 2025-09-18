@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from pydantic import BaseModel, EmailStr, Field
+from typing import Literal, Optional
 
 
 class RegisterRequest(BaseModel):
@@ -29,3 +30,6 @@ class UserProfile(BaseModel):
     email: EmailStr
     is_active: bool
 
+class LogoutResponse(BaseModel):
+    revoked: Literal["all", "single"]
+    jti: Optional[str] = None

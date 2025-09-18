@@ -20,7 +20,7 @@ from app.core.security import (
 )
 from app.db.sa import get_session
 from app.models.auth_models import RefreshToken, User
-from app.schemas.auth import LoginRequest, RefreshRequest, RegisterRequest, TokenPair, UserProfile
+from app.schemas.auth import LoginRequest, RefreshRequest, RegisterRequest, TokenPair, UserProfile, LogoutResponse
 
 
 router = APIRouter(tags=["auth"])
@@ -72,7 +72,8 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     # Check existing user
     res = await session.execute(select(User).where(User.email == payload.email))
     if res.scalar_one_or_none() is not None:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        # Use 409 Conflict to indicate duplicate resource
+        raise HTTPException(status_code=409, detail="Email already registered")
 
     user = User(email=payload.email, password_hash=hash_password(payload.password))
     session.add(user)
@@ -229,13 +230,13 @@ async def me(current_user: User = Depends(get_current_user)) -> UserProfile:
     return UserProfile(id=current_user.id, email=current_user.email, is_active=current_user.is_active)
 
 
-@router.post("/logout", status_code=200)
+@router.post("/logout", status_code=200, response_model=LogoutResponse)
 async def logout(
     payload: RefreshRequest | None = None,
     all_sessions: bool = Query(False, description="Revoke all refresh tokens for current user"),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-) -> None:
+) -> LogoutResponse:
     # Revoke specific refresh token (if provided) or all for the user
     if all_sessions or not payload:
         await session.execute(
@@ -248,7 +249,7 @@ async def logout(
             "Logout all sessions",
             extra={"event": "logout_all", "user_id": str(current_user.id)},
         )
-        return {"revoked": "all"}
+        return LogoutResponse(revoked="all")
 
     # Revoke the provided refresh token if it belongs to the current user
     try:
@@ -293,4 +294,4 @@ async def logout(
         "Logout single session",
         extra={"event": "logout_single", "user_id": str(current_user.id), "jti": str(token_id)},
     )
-    return {"revoked": "single", "jti": str(token_id)}
+    return LogoutResponse(revoked="single", jti=str(token_id))
