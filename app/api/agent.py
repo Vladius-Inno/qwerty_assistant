@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from app.api.auth import get_current_user
 from app.models.auth_models import User
 from app.llm.call_llm import call_llm
-from app.llm.agent_2 import agent_loop
+from app.llm.agent_2 import agent_loop, set_progress_callback
 from app.services.articles import fetch_articles as svc_fetch_articles
 from app.services.relations import get_related_articles_agent as svc_get_related
 from app.services.search import combined_search_agent as svc_combined_search
@@ -128,6 +128,7 @@ class JobStatusResponse(BaseModel):
     finished_at: Optional[datetime] = None
     result: Optional[dict | str] = None
     error: Optional[str] = None
+    message: Optional[str] = None
 
 
 @router.post("/agent-loop/start", response_model=StartJobResponse)
@@ -143,6 +144,8 @@ async def api_agent_loop_start(
         "started_at": None,
         "finished_at": None,
         "user_id": str(current_user.id),
+        "log": [],
+        "message": None,
     }
 
     async def _runner():
@@ -151,7 +154,14 @@ async def api_agent_loop_start(
             return
         j["status"] = "running"
         j["started_at"] = datetime.now(timezone.utc)
+        def _report(msg: str):
+            j = _JOBS.get(job_id)
+            if not j:
+                return
+            j.setdefault("log", []).append(msg)
+            j["message"] = msg
         try:
+            set_progress_callback(_report)
             res = await agent_loop(user_goal=payload.user_goal, max_turns=payload.max_turns)
             j["result"] = res
             j["status"] = "done"
@@ -159,6 +169,7 @@ async def api_agent_loop_start(
             j["error"] = str(e)
             j["status"] = "error"
         finally:
+            set_progress_callback(None)
             j["finished_at"] = datetime.now(timezone.utc)
 
     asyncio.create_task(_runner())
@@ -183,4 +194,5 @@ async def api_agent_loop_status(
         finished_at=j.get("finished_at"),
         result=j.get("result"),
         error=j.get("error"),
+        message=j.get("message"),
     )

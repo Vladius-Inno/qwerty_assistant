@@ -1,7 +1,7 @@
 import json
 import os
 import inspect
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Callable
 from openai import AsyncOpenAI
 from app.services.articles import fetch_articles
 from app.services.relations import get_related_articles_agent
@@ -11,6 +11,14 @@ from pprint import pprint
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MODEL = 'gpt-5-mini'
 MAX_PREVIEW = 5
+
+# Optional progress reporter callback. If set, logged_function will send
+# human-readable messages before and after each tool/function call the agent makes.
+_progress_cb: Optional[Callable[[str], None]] = None
+
+def set_progress_callback(cb: Optional[Callable[[str], None]]) -> None:
+    global _progress_cb
+    _progress_cb = cb
 
 def _safe_get(d, *keys, default=None):
     for k in keys:
@@ -131,10 +139,19 @@ def logged_function(fn):
                 pprint(f"  args: {args}")
             if kwargs:
                 pprint(f"  kwargs: {kwargs}")
-
+            if _progress_cb:
+                try:
+                    _progress_cb(f"{fn.__name__}: starting with args={args} kwargs={kwargs}")
+                except Exception:
+                    pass
             result = await fn(*args, **kwargs)
             pretty = _format_result(result)
             pprint(f"[Function result] {pretty}\n")
+            if _progress_cb:
+                try:
+                    _progress_cb(f"{fn.__name__}: {pretty}")
+                except Exception:
+                    pass
             return result
         return wrapper
     else:
@@ -144,10 +161,19 @@ def logged_function(fn):
                 pprint(f"  args: {args}")
             if kwargs:
                 pprint(f"  kwargs: {kwargs}")
-
+            if _progress_cb:
+                try:
+                    _progress_cb(f"{fn.__name__}: starting with args={args} kwargs={kwargs}")
+                except Exception:
+                    pass
             result = fn(*args, **kwargs)
             pretty = _format_result(result)
             pprint(f"[Function result] {pretty}\n")
+            if _progress_cb:
+                try:
+                    _progress_cb(f"{fn.__name__}: {pretty}")
+                except Exception:
+                    pass
             return result
         return wrapper
 

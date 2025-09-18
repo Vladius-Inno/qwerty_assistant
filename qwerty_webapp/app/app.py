@@ -221,7 +221,8 @@ def main(page: ft.Page):
 
     # Research view: right messages + input (interactive area)
     messages_col = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
-    progress_row = ft.Row([ft.ProgressRing()], alignment=ft.MainAxisAlignment.START, visible=False)
+    status_text = ft.Text("", size=12, selectable=False)
+    progress_row = ft.Row([ft.ProgressRing(), ft.Container(width=8), status_text], alignment=ft.MainAxisAlignment.START, visible=False)
     input_field = ft.TextField(hint_text="Type your research request...", multiline=True, min_lines=1, max_lines=7, expand=True)
     send_btn = ft.IconButton(icon=ft.Icons.SEND, tooltip="Send")
 
@@ -333,12 +334,18 @@ def main(page: ft.Page):
 
         # Poll status until done or error
         try:
+            status_text.value = "Starting agent..."
+            page.update()
             while True:
                 status_resp = await asyncio.to_thread(client.agent_loop_status, job_id)
                 if not isinstance(status_resp, dict):
                     await asyncio.sleep(1.5)
                     continue
                 status = status_resp.get("status")
+                msg = status_resp.get("message")
+                if isinstance(msg, str) and msg:
+                    status_text.value = msg
+                    page.update()
                 if status == "done":
                     result = status_resp.get("result")
                     add_message("agent", str(result) if result else "No response.")
@@ -348,6 +355,7 @@ def main(page: ft.Page):
                     break
                 await asyncio.sleep(1.5)
         finally:
+            status_text.value = ""
             set_sending(False)
 
     def do_send(_):
