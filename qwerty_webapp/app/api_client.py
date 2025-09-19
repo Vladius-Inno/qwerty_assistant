@@ -102,7 +102,7 @@ class AuthClient:
         refresh_token = self._get_refresh_token()
         if not refresh_token:
             return False
-        resp = self._client.post("/refresh", json={"refresh_token": refresh_token})
+        resp = self._client.post("/refresh", json={"refresh_token": refresh_token}, timeout=8.0)
         if resp.status_code >= 400:
             return False
         data = resp.json()
@@ -218,6 +218,44 @@ class AuthClient:
             f"/api/agent/agent-loop/status/{job_id}",
             timeout=15.0,
         )
+        if resp.status_code >= 400:
+            return None
+        return resp.json()
+
+    # --- Chats API (protected) ---
+    def chats_create(self, name: str | None = None) -> dict | None:
+        payload = {"name": name} if name else {}
+        resp = self._protected_request("POST", "/api/chats/", json=payload)
+        if resp.status_code >= 400:
+            return None
+        return resp.json()
+
+    def chats_list(self) -> list[dict] | None:
+        resp = self._protected_request("GET", "/api/chats/")
+        if resp.status_code >= 400:
+            return None
+        data = resp.json()
+        if isinstance(data, list):
+            return data
+        return None
+
+    def chats_messages(self, chat_id: str) -> list[dict] | None:
+        resp = self._protected_request("GET", f"/api/chats/{chat_id}/messages")
+        if resp.status_code >= 400:
+            return None
+        data = resp.json()
+        if isinstance(data, list):
+            return data
+        return None
+
+    def chats_add_message(self, chat_id: str, role: str, content: str) -> dict | None:
+        resp = self._protected_request("POST", f"/api/chats/{chat_id}/messages", json={"role": role, "content": content})
+        if resp.status_code >= 400:
+            return None
+        return resp.json()
+
+    def chats_rename(self, chat_id: str, name: str) -> dict | None:
+        resp = self._protected_request("PATCH", f"/api/chats/{chat_id}", json={"name": name})
         if resp.status_code >= 400:
             return None
         return resp.json()
