@@ -265,6 +265,9 @@ def main(page: ft.Page):
     current_chat_id: str | None = None
     viewing_chat_id: str | None = None
     current_view_backup: list[ft.Control] | None = None
+    # Auto-rename management for newly created chats
+    rename_pending: bool = False
+    rename_source_prompt: str | None = None
 
     def _render_chats():
         tiles: list[ft.Control] = []
@@ -341,13 +344,15 @@ def main(page: ft.Page):
         page.update()
 
     def start_new_chat(_=None):
-        nonlocal current_chat_id, viewing_chat_id, can_start_new_chat
+        nonlocal current_chat_id, viewing_chat_id, can_start_new_chat, rename_pending, rename_source_prompt
         # Create a new chat immediately when starting a session/new chat
         try:
             resp = client.chats_create()
             if isinstance(resp, dict) and "id" in resp:
                 current_chat_id = str(resp["id"])
                 viewing_chat_id = current_chat_id
+                rename_pending = True
+                rename_source_prompt = None
             else:
                 current_chat_id = None
                 viewing_chat_id = None
@@ -476,15 +481,21 @@ def main(page: ft.Page):
             return
         job_id = start_resp["job_id"]
 
-        # Poll status until done or error
+        # Poll status until done or error with a guard against silent failures
         try:
             status_text.value = "Starting agent..."
             page.update()
+            invalid_count = 0
             while True:
                 status_resp = await asyncio.to_thread(client.agent_loop_status, job_id)
                 if not isinstance(status_resp, dict):
+                    invalid_count += 1
+                    if invalid_count >= 8:  # ~12s with 1.5s sleep
+                        add_message("agent", "Failed to fetch job status. Please try again.")
+                        break
                     await asyncio.sleep(1.5)
                     continue
+                invalid_count = 0
                 status = status_resp.get("status")
                 msg = status_resp.get("message")
                 if isinstance(msg, str) and msg:
@@ -503,6 +514,7 @@ def main(page: ft.Page):
             set_sending(False)
 
     def do_send(_):
+        nonlocal rename_pending, rename_source_prompt
         if sending:
             return
         prompt = (input_field.value or "").strip()
@@ -510,32 +522,45 @@ def main(page: ft.Page):
             return
         if is_read_only():
             show_notice("Cannot send in read-only chat; start a New Chat")
+            update_input_enabled()
             return
+        set_sending(True)
+        status_text.value = "Starting agent..."
         add_message("user", prompt)
-        # Create chat on first send and save user message in background to avoid UI blocking
+        if rename_pending and not rename_source_prompt:
+            rename_source_prompt = prompt
         created_now = False
         input_field.value = ""
         page.update()
-        set_sending(True)
         async def _send_task():
-            nonlocal current_chat_id, viewing_chat_id, created_now
-            if not current_chat_id:
-                try:
-                    resp = await asyncio.to_thread(client.chats_create)
-                    if isinstance(resp, dict) and "id" in resp:
-                        current_chat_id = str(resp["id"])
-                        viewing_chat_id = current_chat_id
-                        created_now = True
-                except Exception:
-                    current_chat_id = None
-            if current_chat_id:
-                try:
-                    await asyncio.to_thread(client.chats_add_message, current_chat_id, "user", prompt)
-                except Exception:
-                    pass
-            await run_agent_task(prompt)
-            # Persist last agent message into the chat
-            if current_chat_id:
+            nonlocal current_chat_id, viewing_chat_id, created_now, rename_pending, rename_source_prompt
+            ran_agent = False
+            try:
+                if not current_chat_id:
+                    try:
+                        resp = await asyncio.to_thread(client.chats_create)
+                        if isinstance(resp, dict) and "id" in resp:
+                            current_chat_id = str(resp["id"])
+                            viewing_chat_id = current_chat_id
+                            created_now = True
+                            rename_pending = True
+                            if not rename_source_prompt:
+                                rename_source_prompt = prompt
+                    except Exception:
+                        current_chat_id = None
+                if current_chat_id:
+                    try:
+                        await asyncio.to_thread(client.chats_add_message, current_chat_id, "user", prompt)
+                    except Exception:
+                        pass
+                await run_agent_task(prompt)
+                ran_agent = True
+            except Exception:
+                pass
+            finally:
+                if not ran_agent:
+                    set_sending(False)
+            if ran_agent and current_chat_id:
                 try:
                     for ctrl in reversed(messages_col.controls):
                         if isinstance(ctrl, ft.Container) and isinstance(ctrl.content, ft.Column):
@@ -545,33 +570,33 @@ def main(page: ft.Page):
                                 break
                 except Exception:
                     pass
-            # Now that the chat has its first agent message, show it in the sidebar
             try:
                 refresh_chats()
             except Exception:
                 pass
-            # Allow starting a new chat after this one completed a roundtrip
             nonlocal can_start_new_chat
             can_start_new_chat = True
             _update_new_chat_btn()
-            # Mark the finished chat as read-only by clearing active chat id
             completed_chat_id = current_chat_id
             current_chat_id = None
             update_input_enabled()
             _render_chats()
-            # Auto-rename chat to first user prompt (truncated) if this chat was just created
             try:
-                if completed_chat_id and created_now:
-                    first_line = (prompt or "").strip().replace("\n", " ")
+                if completed_chat_id and rename_pending:
+                    first_line = (rename_source_prompt or prompt or "").strip().replace("\n", " ")
                     if first_line:
                         new_name = first_line[:60]
                         await asyncio.to_thread(client.chats_rename, completed_chat_id, new_name)
+                        rename_pending = False
+                        rename_source_prompt = None
                         refresh_chats()
             except Exception:
                 pass
         page.run_task(_send_task)
 
     send_btn.on_click = do_send
+    # Allow Enter/Return to submit from the input field
+    input_field.on_submit = do_send
 
     # ----- View switching -----
     def show_auth_view():
