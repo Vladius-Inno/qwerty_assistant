@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import math
@@ -113,7 +113,7 @@ def main(page: ft.Page):
                     padding=2,
                     rotate=ft.Rotate(angle=-math.pi / 4),
                     content=ft.Text(
-                        "Новости науки\nс Владимиром",
+                        "\u041d\u043e\u0432\u043e\u0441\u0442\u0438 \u043d\u0430\u0443\u043a\u0438\n\u0441 \u0412\u043b\u0430\u0434\u0438\u043c\u0438\u0440\u043e\u043c",
                         text_align=ft.TextAlign.CENTER,
                         weight=ft.FontWeight.BOLD,
                         size=22,
@@ -122,7 +122,6 @@ def main(page: ft.Page):
             ],
         ),
     )
-
     # ----- Main UI -----
     current_user: dict | None = None
     
@@ -222,12 +221,15 @@ def main(page: ft.Page):
     # Research view: right messages + input (interactive area)
     messages_col = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
     status_text = ft.Text("", size=12, selectable=False)
+    readonly_label = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT, visible=False)
     progress_row = ft.Row([ft.ProgressRing(), ft.Container(width=8), status_text], alignment=ft.MainAxisAlignment.START, visible=False)
+    chat_loading_text = ft.Text("Loading chat...", size=12, selectable=False)
+    chat_loading_row = ft.Row([ft.ProgressRing(), ft.Container(width=8), chat_loading_text], alignment=ft.MainAxisAlignment.START, visible=False)
     input_field = ft.TextField(hint_text="Type your research request...", multiline=True, min_lines=1, max_lines=7, expand=True)
     send_btn = ft.IconButton(icon=ft.Icons.SEND, tooltip="Send")
 
     input_row = ft.Row(controls=[input_field, send_btn], alignment=ft.MainAxisAlignment.START)
-    right_area = ft.Column(controls=[messages_col, progress_row, input_row], expand=True, spacing=10)
+    right_area = ft.Column(controls=[messages_col, progress_row, chat_loading_row, readonly_label, input_row], expand=True, spacing=10)
 
     # Database placeholder view (replaces right_area when selected from menu)
     database_view = ft.Container(
@@ -243,11 +245,11 @@ def main(page: ft.Page):
         nonlocal selected_section, main_content, research_btn, database_btn
         selected_section = name
         main_content.content = right_area if name == "research" else database_view
-        research_btn.text = "Research" + (" ✓" if name == "research" else "")
-        database_btn.text = "Database" + (" ✓" if name == "database" else "")
+        research_btn.text = "Research" + (" \u2713" if name == "research" else "")
+        database_btn.text = "Database" + (" \u2713" if name == "database" else "")
         page.update()
 
-    research_btn = ft.TextButton(text="Research ✓", on_click=lambda e: _set_section("research"))
+    research_btn = ft.TextButton(text="Research \u2713", on_click=lambda e: _set_section("research"))
     database_btn = ft.TextButton(text="Database", on_click=lambda e: _set_section("database"))
 
     menu_panel = ft.Container(
@@ -258,10 +260,116 @@ def main(page: ft.Page):
         ),
     )
 
-    chats_list = ft.ListView(controls=[ft.ListTile(title=ft.Text(f"Chat {i+1}")) for i in range(5)], expand=True)
+    chats_list = ft.ListView(controls=[], expand=True)
+    chats_data: list[dict] = []
+    current_chat_id: str | None = None
+    viewing_chat_id: str | None = None
+    current_view_backup: list[ft.Control] | None = None
+    # Auto-rename management for newly created chats
+    rename_pending: bool = False
+    rename_source_prompt: str | None = None
+
+    def _render_chats():
+        tiles: list[ft.Control] = []
+        # Placeholder for returning to current conversation while it is in progress
+        # Show placeholder before first agent reply (including before first send) and while sending
+        show_current_placeholder = (not can_start_new_chat) or sending
+        if show_current_placeholder:
+            def _go_current(_):
+                nonlocal viewing_chat_id, current_view_backup
+                viewing_chat_id = current_chat_id
+                if current_view_backup is not None:
+                    messages_col.controls = current_view_backup
+                    current_view_backup = None
+                    update_input_enabled()
+                    page.update()
+                else:
+                    # If no backup (e.g., app just started or nothing to restore), load persisted if exists
+                    if current_chat_id:
+                        async def _load():
+                            await load_chat_messages(current_chat_id)
+                        page.run_task(_load)
+                    else:
+                        update_input_enabled()
+                        page.update()
+            tiles.append(ft.ListTile(title=ft.Text("\u0422\u0435\u043a\u0443\u0449\u0438\u0439 \u0447\u0430\u0442"), on_click=_go_current))
+            tiles.append(ft.Divider())
+        for ch in chats_data:
+            ch_id = str(ch.get("id"))
+            name = ch.get("name") or "Chat"
+            # Hide the current (in-progress) chat from the normal list until it completes
+            if (not can_start_new_chat) and (current_chat_id is not None) and (ch_id == current_chat_id):
+                continue
+            def _make_handler(chat_id: str):
+                def _on_click(_):
+                    nonlocal viewing_chat_id, current_view_backup
+                    viewing_chat_id = chat_id
+                    # Backup current view if switching away from active conversation
+                    if current_view_backup is None and (current_chat_id is None or chat_id != current_chat_id):
+                        current_view_backup = list(messages_col.controls)
+                    async def _load():
+                        await load_chat_messages(chat_id)
+                    page.run_task(_load)
+                return _on_click
+            tiles.append(ft.ListTile(title=ft.Text(name), on_click=_make_handler(ch_id)))
+        if not tiles:
+            tiles = [ft.Container(padding=10, content=ft.Text("No chats yet", color=ft.Colors.ON_SURFACE_VARIANT, size=12))]
+        chats_list.controls = tiles
+        page.update()
+
+    def refresh_chats():
+        nonlocal chats_data
+        data = client.chats_list()
+        if isinstance(data, list):
+            chats_data = data
+            _render_chats()
+
+    def create_new_chat(_=None):
+        nonlocal current_chat_id, viewing_chat_id
+        resp = client.chats_create()
+        if not isinstance(resp, dict) or "id" not in resp:
+            show_notice("Failed to create a new chat")
+            return
+        current_chat_id = str(resp["id"])
+        viewing_chat_id = current_chat_id
+        messages_col.controls.clear()
+        update_input_enabled()
+        page.update()
+        refresh_chats()
+
+    # New Chat control: enabled only after current chat completes (agent responded)
+    can_start_new_chat = False
+    def _update_new_chat_btn():
+        new_chat_btn.disabled = not can_start_new_chat or sending
+        page.update()
+
+    def start_new_chat(_=None):
+        nonlocal current_chat_id, viewing_chat_id, can_start_new_chat, rename_pending, rename_source_prompt
+        # Do NOT create a chat in DB yet; defer until agent loop completes
+        current_chat_id = None
+        viewing_chat_id = None
+        rename_pending = False
+        rename_source_prompt = None
+        can_start_new_chat = False
+        messages_col.controls.clear()
+        update_input_enabled()
+        _update_new_chat_btn()
+        # Re-render sidebar so 'Текущий чат' placeholder appears immediately
+        _render_chats()
+        page.update()
+
+    new_chat_btn = ft.ElevatedButton(text="New Chat", on_click=start_new_chat, disabled=True)
     chats_panel = ft.Container(
         padding=10,
-        content=ft.Column(controls=[ft.Text("Chats", weight=ft.FontWeight.BOLD), ft.Container(height=6), chats_list], expand=True),
+        content=ft.Column(
+            controls=[
+                ft.Row([ft.Text("Chats", weight=ft.FontWeight.BOLD), new_chat_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.Divider(),
+                chats_list,
+                ft.Divider(),
+            ],
+            expand=True,
+        ),
         expand=True,
     )
 
@@ -311,13 +419,47 @@ def main(page: ft.Page):
 
     sending = False
 
+    def is_read_only() -> bool:
+        # Read-only when viewing a chat different from the active one, or when no active chat exists
+        return (viewing_chat_id is not None) and (current_chat_id is None or viewing_chat_id != current_chat_id)
+
+    def update_input_enabled():
+        ro = is_read_only()
+        input_field.disabled = ro or sending
+        send_btn.disabled = ro or sending
+        readonly_label.visible = ro and not sending
+        if ro:
+            readonly_label.value = "Viewing past chat — read-only"
+        else:
+            readonly_label.value = ""
+        page.update()
+        _update_new_chat_btn()
+
     def set_sending(value: bool):
         nonlocal sending
         sending = value
-        input_field.disabled = value
-        send_btn.disabled = value
+        update_input_enabled()
+        _update_new_chat_btn()
         progress_row.visible = value
         page.update()
+
+    async def load_chat_messages(chat_id: str):
+        # Show loader while retrieving
+        chat_loading_text.value = "Loading chat..."
+        chat_loading_row.visible = True
+        page.update()
+        try:
+            msgs = await asyncio.to_thread(client.chats_messages, chat_id)
+            messages_col.controls.clear()
+            if isinstance(msgs, list):
+                for m in msgs:
+                    role = str(m.get("role") or "agent")
+                    content = str(m.get("content") or "")
+                    add_message("user" if role == "user" else "agent", content)
+            update_input_enabled()
+        finally:
+            chat_loading_row.visible = False
+            page.update()
 
     async def run_agent_task(prompt: str):
         try:
@@ -332,15 +474,21 @@ def main(page: ft.Page):
             return
         job_id = start_resp["job_id"]
 
-        # Poll status until done or error
+        # Poll status until done or error with a guard against silent failures
         try:
             status_text.value = "Starting agent..."
             page.update()
+            invalid_count = 0
             while True:
                 status_resp = await asyncio.to_thread(client.agent_loop_status, job_id)
                 if not isinstance(status_resp, dict):
+                    invalid_count += 1
+                    if invalid_count >= 8:  # ~12s with 1.5s sleep
+                        add_message("agent", "Failed to fetch job status. Please try again.")
+                        break
                     await asyncio.sleep(1.5)
                     continue
+                invalid_count = 0
                 status = status_resp.get("status")
                 msg = status_resp.get("message")
                 if isinstance(msg, str) and msg:
@@ -359,20 +507,89 @@ def main(page: ft.Page):
             set_sending(False)
 
     def do_send(_):
+        nonlocal rename_pending, rename_source_prompt
         if sending:
             return
         prompt = (input_field.value or "").strip()
         if not prompt:
             return
+        if is_read_only():
+            show_notice("Cannot send in read-only chat; start a New Chat")
+            update_input_enabled()
+            return
+        set_sending(True)
+        status_text.value = "Starting agent..."
         add_message("user", prompt)
+        if rename_pending and not rename_source_prompt:
+            rename_source_prompt = prompt
+        created_now = False
         input_field.value = ""
         page.update()
-        set_sending(True)
         async def _send_task():
-            await run_agent_task(prompt)
+            nonlocal current_chat_id, viewing_chat_id, created_now, rename_pending, rename_source_prompt
+            ran_agent = False
+            try:
+                if not current_chat_id:
+                    try:
+                        resp = await asyncio.to_thread(client.chats_create)
+                        if isinstance(resp, dict) and "id" in resp:
+                            current_chat_id = str(resp["id"])
+                            viewing_chat_id = current_chat_id
+                            created_now = True
+                            rename_pending = True
+                            if not rename_source_prompt:
+                                rename_source_prompt = prompt
+                    except Exception:
+                        current_chat_id = None
+                if current_chat_id:
+                    try:
+                        await asyncio.to_thread(client.chats_add_message, current_chat_id, "user", prompt)
+                    except Exception:
+                        pass
+                await run_agent_task(prompt)
+                ran_agent = True
+            except Exception:
+                pass
+            finally:
+                if not ran_agent:
+                    set_sending(False)
+            if ran_agent and current_chat_id:
+                try:
+                    for ctrl in reversed(messages_col.controls):
+                        if isinstance(ctrl, ft.Container) and isinstance(ctrl.content, ft.Column):
+                            items = ctrl.content.controls
+                            if len(items) >= 2 and isinstance(items[0], ft.Text) and items[0].value == "Agent" and isinstance(items[1], ft.Text):
+                                await asyncio.to_thread(client.chats_add_message, current_chat_id, "agent", items[1].value or "")
+                                break
+                except Exception:
+                    pass
+            try:
+                refresh_chats()
+            except Exception:
+                pass
+            nonlocal can_start_new_chat
+            can_start_new_chat = True
+            _update_new_chat_btn()
+            completed_chat_id = current_chat_id
+            current_chat_id = None
+            update_input_enabled()
+            _render_chats()
+            try:
+                if completed_chat_id and rename_pending:
+                    first_line = (rename_source_prompt or prompt or "").strip().replace("\n", " ")
+                    if first_line:
+                        new_name = first_line[:60]
+                        await asyncio.to_thread(client.chats_rename, completed_chat_id, new_name)
+                        rename_pending = False
+                        rename_source_prompt = None
+                        refresh_chats()
+            except Exception:
+                pass
         page.run_task(_send_task)
 
     send_btn.on_click = do_send
+    # Allow Enter/Return to submit from the input field
+    input_field.on_submit = do_send
 
     # ----- View switching -----
     def show_auth_view():
@@ -406,6 +623,12 @@ def main(page: ft.Page):
         top_spacer.visible = False
         auth_gap.visible = False
         page.update()
+        # Start a new chat for this session and load sidebar (exclude current chat from list until completion)
+        try:
+            start_new_chat()
+            refresh_chats()
+        except Exception:
+            pass
 
     def do_submit(_):
         auth_error.value = ""
@@ -435,7 +658,9 @@ def main(page: ft.Page):
         if me:
             show_main_view(me)
         else:
-            show_error("Failed to fetch profile; please try again")
+            # Proceed to main even if /me fails; tokens are set after login
+            show_main_view({})
+            show_notice("Logged in. Profile fetch failed; continuing anyway.")
 
     submit_btn.on_click = do_submit
     # Enter-to-submit on auth fields
@@ -455,37 +680,30 @@ def main(page: ft.Page):
 
     # Init
     on_toggle_change(None)
-    # Seamless session restore: if a refresh token exists, try to restore before showing login form
+    # Background session restore without blocking UI
     if get_refresh_token():
-        def show_restoring(show: bool):
-            restoring_box.visible = show
-            logo.visible = not show
-            form.visible = not show
-            page.update()
-
-        async def _restore():
-            show_restoring(True)
+        async def _restore_bg():
             ok = False
             try:
-                ok = await asyncio.to_thread(client.refresh)
+                ok = await asyncio.wait_for(asyncio.to_thread(client.refresh), timeout=8.0)
             except Exception:
                 ok = False
-            me = None
             if ok:
                 try:
-                    me = await asyncio.to_thread(client.get_me)
+                    me = await asyncio.wait_for(asyncio.to_thread(client.get_me), timeout=8.0)
                 except Exception:
                     me = None
-            if me:
-                # hide restoring before switching to main
-                show_restoring(False)
-                show_main_view(me)
-            else:
-                show_restoring(False)
-
-        page.run_task(_restore)
+                show_main_view(me or {})
+        page.run_task(_restore_bg)
 
 if __name__ == "__main__":
     # Allows running with: python qwerty_webapp/app/app.py
     # In Docker, FLET_SERVER_* env vars make it serve as a web app on the given port.
     ft.app(target=main)
+
+
+
+
+
+
+

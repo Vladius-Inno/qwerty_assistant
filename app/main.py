@@ -21,6 +21,7 @@ async def lifespan(app: FastAPI):
     try:
         from app.db.base import Base
         from app.models import auth_models  # noqa: F401 ensure model registration
+        from app.models import chat_models  # noqa: F401 ensure model registration
         from app.db.sa import _engine as _sa_engine  # type: ignore
 
         if _sa_engine is not None:
@@ -40,6 +41,8 @@ app = FastAPI(lifespan=lifespan)
 app.include_router(articles.router)
 app.include_router(auth_api.router)
 app.include_router(agent_api.router)
+from app.api import chats as chats_api  # noqa: E402
+app.include_router(chats_api.router)
 
 # Basic logging configuration (can be overridden by server config)
 _LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
