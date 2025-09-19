@@ -363,6 +363,8 @@ def main(page: ft.Page):
         messages_col.controls.clear()
         update_input_enabled()
         _update_new_chat_btn()
+        # Re-render sidebar so 'Текущий чат' placeholder appears immediately
+        _render_chats()
         page.update()
 
     new_chat_btn = ft.ElevatedButton(text="New Chat", on_click=start_new_chat, disabled=True)
