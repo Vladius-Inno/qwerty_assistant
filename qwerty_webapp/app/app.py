@@ -345,20 +345,11 @@ def main(page: ft.Page):
 
     def start_new_chat(_=None):
         nonlocal current_chat_id, viewing_chat_id, can_start_new_chat, rename_pending, rename_source_prompt
-        # Create a new chat immediately when starting a session/new chat
-        try:
-            resp = client.chats_create()
-            if isinstance(resp, dict) and "id" in resp:
-                current_chat_id = str(resp["id"])
-                viewing_chat_id = current_chat_id
-                rename_pending = True
-                rename_source_prompt = None
-            else:
-                current_chat_id = None
-                viewing_chat_id = None
-        except Exception:
-            current_chat_id = None
-            viewing_chat_id = None
+        # Do NOT create a chat in DB yet; defer until agent loop completes
+        current_chat_id = None
+        viewing_chat_id = None
+        rename_pending = False
+        rename_source_prompt = None
         can_start_new_chat = False
         messages_col.controls.clear()
         update_input_enabled()
@@ -709,6 +700,7 @@ if __name__ == "__main__":
     # Allows running with: python qwerty_webapp/app/app.py
     # In Docker, FLET_SERVER_* env vars make it serve as a web app on the given port.
     ft.app(target=main)
+
 
 
 
