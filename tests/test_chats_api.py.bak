@@ -48,7 +48,6 @@ class FakeChatSession:
         self.execute_kind = execute_kind  # 'chats' or 'messages'
         self.chats: Dict[uuid.UUID, FakeChat] = {}
         self.messages: Dict[uuid.UUID, List[FakeMessage]] = {}
-        self._seq = 0
 
     async def execute(self, stmt):
         if self.execute_kind == "chats":
@@ -270,6 +269,5 @@ def test_rename_chat_invalid_name_422(client):
 
     res = client.patch(f"/api/chats/{chat_id}", json={"name": ""})
     assert res.status_code == 422
-
 
 
