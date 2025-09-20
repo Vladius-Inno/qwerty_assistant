@@ -255,12 +255,197 @@ def main(page: ft.Page):
     input_row = ft.Row(controls=[input_field, send_btn], alignment=ft.MainAxisAlignment.START)
     right_area = ft.Column(controls=[messages_col, progress_row, chat_loading_row, readonly_label, input_row], expand=True, spacing=10)
 
-    # Database placeholder view (replaces right_area when selected from menu)
-    database_view = ft.Container(
-        content=ft.Text("Database view coming soon..."),
-        alignment=ft.alignment.center,
-        expand=True,
-    )
+    # Database interactions view (left: interactions menu replaces chats; right: controls + results)
+    db_selected_op: str = "combined"  # combined | related | keywords | by_id
+    db_results_col = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
+
+    # Controls per operation
+    # Combined search controls
+    db_comb_query = ft.TextField(label="Query", expand=True)
+    db_comb_limit = ft.TextField(label="Limit", value="10", width=120)
+    db_comb_preselect = ft.TextField(label="Preselect", value="200", width=120)
+    db_comb_alpha = ft.Slider(min=0.0, max=1.0, divisions=20, value=0.7, label="{value}")
+    db_comb_exec = ft.ElevatedButton(text="Execute")
+
+    # Related controls
+    db_rel_id = ft.TextField(label="Article ID", width=180)
+    db_rel_method = ft.Dropdown(label="Method", width=160, options=[ft.dropdown.Option("semantic"), ft.dropdown.Option("cooccur")], value="semantic")
+    db_rel_topn = ft.TextField(label="Top N", value="10", width=120)
+    db_rel_exec = ft.ElevatedButton(text="Execute")
+
+    # Keywords search controls
+    db_kw_keywords = ft.TextField(label="Keywords (comma-separated)", expand=True)
+    db_kw_mode = ft.Dropdown(label="Mode", width=140, options=[ft.dropdown.Option("any"), ft.dropdown.Option("all")], value="any")
+    db_kw_partial = ft.Switch(label="Partial match", value=False)
+    db_kw_limit = ft.TextField(label="Limit", value="20", width=120)
+    db_kw_exec = ft.ElevatedButton(text="Execute")
+
+    # Show by ID controls
+    db_get_id = ft.TextField(label="Article ID", width=220)
+    db_get_exec = ft.ElevatedButton(text="Load")
+
+    db_controls_col = ft.Column(spacing=10)
+
+    def _render_article_meta_row(item: dict) -> ft.Control:
+        art_id_raw = item.get("id")
+        try:
+            art_id = int(art_id_raw)
+        except Exception:
+            art_id = None
+        title = str(item.get("title") or "<no title>")
+        date = str(item.get("date") or "")
+
+        def _open(_):
+            if art_id is not None:
+                async def _open_task():
+                    await load_article_detail(art_id)
+                page.run_task(_open_task)
+
+        return ft.ListTile(
+            title=ft.Text(title),
+            subtitle=ft.Text(f"ID: {art_id_raw}  Date: {date}"),
+            on_click=_open,
+        )
+
+    db_detail_container = ft.Container(visible=False)
+    db_content_stack = ft.Stack(controls=[], expand=True)
+
+    def _show_db_list_view():
+        db_detail_container.visible = False
+        # controls area
+        if db_selected_op == "combined":
+            controls_row1 = ft.Row([db_comb_query])
+            controls_row2 = ft.Row([db_comb_limit, db_comb_preselect])
+            controls_row3 = ft.Row([ft.Text("Alpha"), db_comb_alpha, db_comb_exec])
+            db_controls_col.controls = [ft.Text("Combined Search", weight=ft.FontWeight.BOLD), controls_row1, controls_row2, controls_row3]
+        elif db_selected_op == "related":
+            controls_row = ft.Row([db_rel_id, db_rel_method, db_rel_topn, db_rel_exec])
+            db_controls_col.controls = [ft.Text("Related Articles", weight=ft.FontWeight.BOLD), controls_row]
+        elif db_selected_op == "keywords":
+            controls_row1 = ft.Row([db_kw_keywords])
+            controls_row2 = ft.Row([db_kw_mode, db_kw_partial, db_kw_limit, db_kw_exec])
+            db_controls_col.controls = [ft.Text("Keywords Search", weight=ft.FontWeight.BOLD), controls_row1, controls_row2]
+        else:  # by_id
+            controls_row = ft.Row([db_get_id, db_get_exec])
+            db_controls_col.controls = [ft.Text("Show Article by ID", weight=ft.FontWeight.BOLD), controls_row]
+        # mount list view
+        list_panel = ft.Column(controls=[db_controls_col, ft.Divider(), db_results_col], expand=True, spacing=10)
+        db_main_container.content = list_panel
+        page.update()
+
+    def _show_db_detail_view(data: dict):
+        # data is ArticleFull
+        back_btn = ft.TextButton(text="Back", icon=ft.Icons.ARROW_BACK, on_click=lambda e: _show_db_list_view())
+        header = ft.Row([back_btn, ft.Text(str(data.get("title") or "Article"), weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.START)
+        meta_items = []
+        for key in ["id", "date", "release_number", "topic_name", "keywords", "tags", "summary", "source_link", "article_link"]:
+            val = data.get(key)
+            if val is None:
+                continue
+            meta_items.append(ft.Text(f"{key}: {val}"))
+        body_text = ft.Text(str(data.get("body") or ""), selectable=True)
+        db_detail_container.content = ft.Column(controls=[header, ft.Divider(), *meta_items, ft.Divider(), body_text], spacing=8, scroll=ft.ScrollMode.AUTO)
+        db_detail_container.visible = True
+        db_main_container.content = db_detail_container
+        page.update()
+
+    async def load_article_detail(article_id: int):
+        art = await asyncio.to_thread(client.articles_get, article_id)
+        if not art:
+            show_notice("Article not found")
+            return
+        _show_db_detail_view(art)
+
+    # Execute handlers
+    async def _exec_combined():
+        try:
+            q = db_comb_query.value or ""
+            limit = int(db_comb_limit.value or "10")
+            preselect = int(db_comb_preselect.value or "200")
+            alpha = float(db_comb_alpha.value or 0.7)
+        except Exception:
+            show_notice("Invalid parameters for combined search")
+            return
+        db_results_col.controls = [ft.Text("Loading..."), ft.ProgressRing()]
+        page.update()
+        # Prefer protected agent endpoint if available; fallback to public
+        data = await asyncio.to_thread(client.agent_combined_search, q, limit, preselect, alpha)
+        if not data:
+            # try public
+            data_list = await asyncio.to_thread(client.articles_combined_search, q, limit, preselect, alpha)
+        else:
+            data_list = data.get("result") if isinstance(data, dict) else None
+        items = []
+        if isinstance(data_list, list):
+            for item in data_list:
+                if isinstance(item, dict):
+                    items.append(_render_article_meta_row(item))
+        if not items:
+            items = [ft.Text("No results")] 
+        db_results_col.controls = items
+        page.update()
+
+    async def _exec_related():
+        try:
+            aid = int(db_rel_id.value or "0")
+            topn = int(db_rel_topn.value or "10")
+            method = db_rel_method.value or "semantic"
+        except Exception:
+            show_notice("Invalid parameters for related search")
+            return
+        db_results_col.controls = [ft.Text("Loading..."), ft.ProgressRing()]
+        page.update()
+        lst = await asyncio.to_thread(client.articles_related, aid, method, topn)
+        items = []
+        if isinstance(lst, list):
+            for it in lst:
+                if isinstance(it, dict):
+                    items.append(_render_article_meta_row(it))
+        if not items:
+            items = [ft.Text("No results")] 
+        db_results_col.controls = items
+        page.update()
+
+    async def _exec_keywords():
+        try:
+            kws_raw = db_kw_keywords.value or ""
+            kws = [s.strip() for s in kws_raw.split(",") if s.strip()]
+            mode = db_kw_mode.value or "any"
+            partial = bool(db_kw_partial.value)
+            limit = int(db_kw_limit.value or "20")
+        except Exception:
+            show_notice("Invalid parameters for keywords search")
+            return
+        db_results_col.controls = [ft.Text("Loading..."), ft.ProgressRing()]
+        page.update()
+        resp = await asyncio.to_thread(client.articles_search_keywords, keywords=kws, q=None, mode=mode, partial=partial, limit=limit)
+        items = []
+        if isinstance(resp, dict):
+            data_list = resp.get("result")
+            if isinstance(data_list, list):
+                for it in data_list:
+                    if isinstance(it, dict):
+                        items.append(_render_article_meta_row(it))
+        if not items:
+            items = [ft.Text("No results")] 
+        db_results_col.controls = items
+        page.update()
+
+    async def _exec_get():
+        try:
+            aid = int(db_get_id.value or "0")
+        except Exception:
+            show_notice("Invalid article id")
+            return
+        await load_article_detail(aid)
+
+    db_comb_exec.on_click = lambda e: page.run_task(_exec_combined)
+    db_rel_exec.on_click = lambda e: page.run_task(_exec_related)
+    db_kw_exec.on_click = lambda e: page.run_task(_exec_keywords)
+    db_get_exec.on_click = lambda e: page.run_task(_exec_get)
+
+    db_main_container = ft.Container(expand=True)
+    # Defer initial DB view rendering until Database section is selected
 
     # Left sidebar: upper small menu, lower larger chats placeholder
     selected_section = "research"
@@ -268,7 +453,18 @@ def main(page: ft.Page):
     def _set_section(name: str):
         nonlocal selected_section, main_content, research_btn, database_btn
         selected_section = name
-        main_content.content = right_area if name == "research" else database_view
+        if name == "research":
+            main_content.content = right_area
+            chats_panel.visible = True
+            db_panel.visible = False
+        else:
+            # Database mode: show db interactions in left, clear main to db view
+            main_content.content = db_main_container
+            chats_panel.visible = False
+            db_panel.visible = True
+            # Reset to default op view
+            _show_db_list_view()
+            _update_db_menu_labels()
         research_btn.text = "Research" + (" \u2713" if name == "research" else "")
         database_btn.text = "Database" + (" \u2713" if name == "database" else "")
         page.update()
@@ -397,12 +593,50 @@ def main(page: ft.Page):
         expand=True,
     )
 
+    # Database interactions left panel (hidden by default)
+    def _select_db_op(name: str):
+        nonlocal db_selected_op
+        db_selected_op = name
+        _update_db_menu_labels()
+        db_results_col.controls = []
+        _show_db_list_view()
+
+    def _update_db_menu_labels():
+        combined_btn.text = ("• " if db_selected_op == "combined" else "  ") + "Combined Search"
+        related_btn.text = ("• " if db_selected_op == "related" else "  ") + "Related Articles"
+        keywords_btn.text = ("• " if db_selected_op == "keywords" else "  ") + "Keywords Search"
+        byid_btn.text = ("• " if db_selected_op == "by_id" else "  ") + "Show by ID"
+
+    combined_btn = ft.TextButton(text="Combined Search", on_click=lambda e: _select_db_op("combined"))
+    related_btn = ft.TextButton(text="Related Articles", on_click=lambda e: _select_db_op("related"))
+    keywords_btn = ft.TextButton(text="Keywords Search", on_click=lambda e: _select_db_op("keywords"))
+    byid_btn = ft.TextButton(text="Show by ID", on_click=lambda e: _select_db_op("by_id"))
+    _update_db_menu_labels()
+    db_panel = ft.Container(
+        padding=10,
+        visible=False,
+        content=ft.Column(
+            controls=[
+                ft.Text("Interactions", weight=ft.FontWeight.BOLD),
+                ft.Divider(),
+                combined_btn,
+                related_btn,
+                keywords_btn,
+                byid_btn,
+                ft.Divider(),
+            ],
+            expand=True,
+        ),
+        expand=True,
+    )
+
     left_sidebar = ft.Container(
         width=260,
         content=ft.Column(
             controls=[
                 menu_panel,
                 chats_panel,
+                db_panel,
             ],
             expand=True,
             spacing=8,
