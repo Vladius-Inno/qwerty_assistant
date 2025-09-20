@@ -4,8 +4,32 @@ import asyncio
 import math
 import flet as ft
 
+from typing import Callable, Optional
+
 from api_client import AuthClient
 from config import settings
+
+
+# --- Testability hooks (dependency injection) ---
+AuthClientFactory = Callable[[str, Callable[[], Optional[str]], Callable[[Optional[str]], None]], AuthClient]
+_client_factory: Optional[AuthClientFactory] = None
+_enable_auto_restore: bool = True
+
+
+def set_client_factory(factory: AuthClientFactory) -> None:
+    global _client_factory
+    _client_factory = factory
+
+
+def set_auto_restore(enabled: bool) -> None:
+    global _enable_auto_restore
+    _enable_auto_restore = enabled
+
+
+def _make_client(base_url: str, get_refresh_token, set_refresh_token) -> AuthClient:
+    if _client_factory is not None:
+        return _client_factory(base_url, get_refresh_token, set_refresh_token)
+    return AuthClient(base_url=base_url, get_refresh_token=get_refresh_token, set_refresh_token=set_refresh_token)
 
 
 def main(page: ft.Page):
@@ -40,10 +64,10 @@ def main(page: ft.Page):
         else:
             page.client_storage.remove("refresh_token")
 
-    client = AuthClient(
-        base_url=settings.api_base_url,
-        get_refresh_token=get_refresh_token,
-        set_refresh_token=set_refresh_token,
+    client = _make_client(
+        settings.api_base_url,
+        get_refresh_token,
+        set_refresh_token,
     )
 
     # ----- Auth UI -----
@@ -678,10 +702,44 @@ def main(page: ft.Page):
     )
     page.add(root)
 
+    # Expose key handles for tests (non-breaking, ignored by Flet at runtime)
+    try:
+        from dataclasses import dataclass
+
+        @dataclass
+        class TestHandles:
+            client: AuthClient
+            controls: dict
+            actions: dict
+
+        page._test_handles = TestHandles(
+            client=client,
+            controls={
+                "email": email,
+                "password": password,
+                "toggle_mode": toggle_mode,
+                "submit_btn": submit_btn,
+                "messages_col": messages_col,
+                "input_field": input_field,
+                "send_btn": send_btn,
+                "main_view": main_view,
+            },
+            actions={
+                "submit": lambda: do_submit(None),
+                "send": lambda: do_send(None),
+                "start_new_chat": lambda: start_new_chat(None),
+                "show_main_view": show_main_view,
+                "show_auth_view": show_auth_view,
+                "refresh_chats": refresh_chats,
+            },
+        )
+    except Exception:
+        pass
+
     # Init
     on_toggle_change(None)
     # Background session restore without blocking UI
-    if get_refresh_token():
+    if _enable_auto_restore and get_refresh_token():
         async def _restore_bg():
             ok = False
             try:
