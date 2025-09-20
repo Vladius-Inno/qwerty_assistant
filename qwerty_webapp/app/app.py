@@ -258,8 +258,8 @@ def main(page: ft.Page):
     # Database interactions view (left: interactions menu replaces chats; right: controls + results)
     db_selected_op: str = "combined"  # combined | related | keywords | by_id
     db_results_col = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
-    db_results_data: dict[str, list[dict]] = {"combined": [], "related": [], "keywords": [], "by_id": []}
-    db_sort_state: dict[str, tuple[str, bool]] = {"combined": ("id", True), "related": ("id", True), "keywords": ("id", True), "by_id": ("id", True)}
+    db_results_data: dict[str, list[dict]] = {"combined": [], "related": [], "keywords": [], "by_id": [], "general": []}
+    db_sort_state: dict[str, tuple[str, bool]] = {"combined": ("id", True), "related": ("id", True), "keywords": ("id", True), "by_id": ("id", True), "general": ("id", True)}
 
     # Controls per operation
     # Combined search controls
@@ -285,6 +285,16 @@ def main(page: ft.Page):
     # Show by ID controls
     db_get_id = ft.TextField(label="Article ID", width=220)
     db_get_exec = ft.ElevatedButton(text="Load")
+
+    # General list controls (Общий поиск)
+    db_gen_limit = ft.TextField(label="Limit", value="20", width=120)
+    db_gen_offset = ft.TextField(label="Offset", value="0", width=120)
+    db_gen_topic = ft.TextField(label="Topic", width=160)
+    db_gen_tag = ft.TextField(label="Tag", width=160)
+    db_gen_q = ft.TextField(label="Query", expand=True)
+    db_gen_date_from = ft.TextField(label="Date from (YYYY-MM-DD)", width=200)
+    db_gen_date_to = ft.TextField(label="Date to (YYYY-MM-DD)", width=200)
+    db_gen_exec = ft.ElevatedButton(text="Execute")
 
     db_controls_col = ft.Column(spacing=10)
 
@@ -391,7 +401,7 @@ def main(page: ft.Page):
         if db_selected_op == "combined":
             controls_row1 = ft.Row([db_comb_query])
             controls_row2 = ft.Row([db_comb_limit, db_comb_preselect, ft.Text("Alpha"), db_comb_alpha, db_comb_exec])
-            db_controls_col.controls = [ft.Text("Combined Search", weight=ft.FontWeight.BOLD), controls_row1, controls_row2]
+            db_controls_col.controls = [ft.Text("Семантико-текстовый поиск", weight=ft.FontWeight.BOLD), controls_row1, controls_row2]
         elif db_selected_op == "related":
             controls_row = ft.Row([db_rel_id, db_rel_method, db_rel_topn, db_rel_exec])
             db_controls_col.controls = [ft.Text("Related Articles", weight=ft.FontWeight.BOLD), controls_row]
@@ -399,6 +409,11 @@ def main(page: ft.Page):
             controls_row1 = ft.Row([db_kw_keywords])
             controls_row2 = ft.Row([db_kw_mode, db_kw_partial, db_kw_limit, db_kw_exec])
             db_controls_col.controls = [ft.Text("Keywords Search", weight=ft.FontWeight.BOLD), controls_row1, controls_row2]
+        elif db_selected_op == "general":
+            controls_row1 = ft.Row([db_gen_q])
+            controls_row2 = ft.Row([db_gen_limit, db_gen_offset, db_gen_topic, db_gen_tag])
+            controls_row3 = ft.Row([db_gen_date_from, db_gen_date_to, db_gen_exec])
+            db_controls_col.controls = [ft.Text("Общий поиск", weight=ft.FontWeight.BOLD), controls_row1, controls_row2, controls_row3]
         else:  # by_id
             controls_row = ft.Row([db_get_id, db_get_exec])
             db_controls_col.controls = [ft.Text("Show Article by ID", weight=ft.FontWeight.BOLD), controls_row]
@@ -427,21 +442,44 @@ def main(page: ft.Page):
             ft.Text(f"Тема: {topic_val}") if topic_val else ft.Container(),
         ], wrap=True, alignment=ft.MainAxisAlignment.START)
 
-        # Keywords
+        # Keywords (clickable -> open Keywords Search prefilled)
         kw_controls: list[ft.Control] = []
         if isinstance(data.get("keywords"), list) and data.get("keywords"):
-            kw_controls = [
-                ft.Text("Keywords:"),
-                ft.Row(controls=[ft.Chip(label=ft.Text(k)) for k in data.get("keywords")], spacing=6, wrap=True, run_spacing=6),
-            ]
+            def _kw_click(word: str):
+                def handler(_):
+                    nonlocal db_selected_op
+                    db_selected_op = "keywords"
+                    _update_db_menu_labels()
+                    # Reset fields then set keyword
+                    db_kw_keywords.value = word
+                    db_kw_mode.value = "any"
+                    db_kw_partial.value = False
+                    db_kw_limit.value = "20"
+                    _show_db_list_view()
+                    page.run_task(_exec_keywords)
+                return handler
+            kw_controls = [ft.Text("Keywords:"), ft.Row(controls=[ft.Chip(label=ft.Text(k), on_click=_kw_click(k)) for k in data.get("keywords")], spacing=6, wrap=True, run_spacing=6)]
 
-        # Tags as chips
+        # Tags as chips (clickable -> open Общий поиск with tag preset)
         tag_controls: list[ft.Control] = []
         if isinstance(data.get("tags"), list) and data.get("tags"):
-            tag_controls = [
-                ft.Text("Tags:"),
-                ft.Row(controls=[ft.Chip(label=ft.Text(t)) for t in data.get("tags")], spacing=6, wrap=True, run_spacing=6),
-            ]
+            def _tag_click(tag: str):
+                def handler(_):
+                    nonlocal db_selected_op
+                    db_selected_op = "general"
+                    _update_db_menu_labels()
+                    # Reset general fields then set tag
+                    db_gen_q.value = ""
+                    db_gen_topic.value = ""
+                    db_gen_tag.value = tag
+                    db_gen_date_from.value = ""
+                    db_gen_date_to.value = ""
+                    db_gen_offset.value = "0"
+                    db_gen_limit.value = "20"
+                    _show_db_list_view()
+                    page.run_task(_exec_general)
+                return handler
+            tag_controls = [ft.Text("Tags:"), ft.Row(controls=[ft.Chip(label=ft.Text(t), on_click=_tag_click(t)) for t in data.get("tags")], spacing=6, wrap=True, run_spacing=6)]
 
         # Links
         link_controls: list[ft.Control] = []
@@ -461,10 +499,19 @@ def main(page: ft.Page):
         links_row = ft.Row(link_controls, wrap=True, spacing=8)
 
         body_text = ft.Text(str(data.get("body") or ""), selectable=True)
+        # Keep header/top meta fixed; make body area scrollable
         db_detail_container.content = ft.Column(
-            controls=[header, top_meta, links_row] + kw_controls + tag_controls + [ft.Divider(), body_text],
+            controls=[
+                header,
+                top_meta,
+                links_row,
+                *kw_controls,
+                *tag_controls,
+                ft.Divider(),
+                ft.Container(expand=True, content=ft.Column(controls=[body_text], scroll=ft.ScrollMode.AUTO)),
+            ],
             spacing=8,
-            scroll=ft.ScrollMode.AUTO,
+            expand=True,
         )
         db_detail_container.visible = True
         db_main_container.content = db_detail_container
@@ -546,7 +593,14 @@ def main(page: ft.Page):
             return
         db_results_col.controls = [ft.Text("Loading..."), ft.ProgressRing()]
         page.update()
-        resp = await asyncio.to_thread(client.articles_search_keywords, keywords=kws, q=None, mode=mode, partial=partial, limit=limit)
+        resp = await asyncio.to_thread(
+            client.articles_search_keywords,
+            keywords=kws,
+            q=None,
+            mode=mode,
+            partial=partial,
+            limit=limit,
+        )
         items_data: list[dict] = []
         if isinstance(resp, dict):
             data_list = resp.get("result")
@@ -562,6 +616,43 @@ def main(page: ft.Page):
         _render_results_for_op()
         page.update()
 
+    async def _exec_general():
+        try:
+            limit = int(db_gen_limit.value or "20")
+            offset = int(db_gen_offset.value or "0")
+            topic = (db_gen_topic.value or "").strip() or None
+            tag = (db_gen_tag.value or "").strip() or None
+            q = (db_gen_q.value or "").strip() or None
+            date_from = (db_gen_date_from.value or "").strip() or None
+            date_to = (db_gen_date_to.value or "").strip() or None
+        except Exception:
+            show_notice("Invalid parameters for general search")
+            return
+        db_results_col.controls = [ft.Text("Loading..."), ft.ProgressRing()]
+        page.update()
+        lst = await asyncio.to_thread(
+            client.articles_list,
+            limit=limit,
+            offset=offset,
+            topic=topic,
+            tag=tag,
+            date_from=date_from,
+            date_to=date_to,
+            q=q,
+        )
+        items_data: list[dict] = []
+        if isinstance(lst, list):
+            for it in lst:
+                if isinstance(it, dict):
+                    items_data.append({
+                        "id": it.get("id"),
+                        "date": it.get("date"),
+                        "title": it.get("title"),
+                    })
+        db_results_data["general"] = items_data
+        _render_results_for_op()
+        page.update()
+
     async def _exec_get():
         try:
             aid = int(db_get_id.value or "0")
@@ -574,6 +665,29 @@ def main(page: ft.Page):
     db_rel_exec.on_click = lambda e: page.run_task(_exec_related)
     db_kw_exec.on_click = lambda e: page.run_task(_exec_keywords)
     db_get_exec.on_click = lambda e: page.run_task(_exec_get)
+    db_gen_exec.on_click = lambda e: page.run_task(_exec_general)
+
+    # Commit (execute) on Enter for all TextFields in search options
+    # Семантико-текстовый поиск
+    db_comb_query.on_submit = lambda e: page.run_task(_exec_combined)
+    db_comb_limit.on_submit = lambda e: page.run_task(_exec_combined)
+    db_comb_preselect.on_submit = lambda e: page.run_task(_exec_combined)
+    # Связанные статьи
+    db_rel_id.on_submit = lambda e: page.run_task(_exec_related)
+    db_rel_topn.on_submit = lambda e: page.run_task(_exec_related)
+    # Поиск по ключевым словам
+    db_kw_keywords.on_submit = lambda e: page.run_task(_exec_keywords)
+    db_kw_limit.on_submit = lambda e: page.run_task(_exec_keywords)
+    # Показ по ID
+    db_get_id.on_submit = lambda e: page.run_task(_exec_get)
+    # Общий поиск
+    db_gen_q.on_submit = lambda e: page.run_task(_exec_general)
+    db_gen_limit.on_submit = lambda e: page.run_task(_exec_general)
+    db_gen_offset.on_submit = lambda e: page.run_task(_exec_general)
+    db_gen_topic.on_submit = lambda e: page.run_task(_exec_general)
+    db_gen_tag.on_submit = lambda e: page.run_task(_exec_general)
+    db_gen_date_from.on_submit = lambda e: page.run_task(_exec_general)
+    db_gen_date_to.on_submit = lambda e: page.run_task(_exec_general)
 
     db_main_container = ft.Container(expand=True)
     # Defer initial DB view rendering until Database section is selected
@@ -732,12 +846,14 @@ def main(page: ft.Page):
         _show_db_list_view()
 
     def _update_db_menu_labels():
-        combined_btn.text = ("• " if db_selected_op == "combined" else "  ") + "Combined Search"
+        combined_btn.text = ("• " if db_selected_op == "combined" else "  ") + "Семантико-текстовый поиск"
+        general_btn.text = ("• " if db_selected_op == "general" else "  ") + "Общий поиск"
         related_btn.text = ("• " if db_selected_op == "related" else "  ") + "Related Articles"
         keywords_btn.text = ("• " if db_selected_op == "keywords" else "  ") + "Keywords Search"
         byid_btn.text = ("• " if db_selected_op == "by_id" else "  ") + "Show by ID"
 
-    combined_btn = ft.TextButton(text="Combined Search", on_click=lambda e: _select_db_op("combined"))
+    combined_btn = ft.TextButton(text="Семантико-текстовый поиск", on_click=lambda e: _select_db_op("combined"))
+    general_btn = ft.TextButton(text="Общий поиск", on_click=lambda e: _select_db_op("general"))
     related_btn = ft.TextButton(text="Related Articles", on_click=lambda e: _select_db_op("related"))
     keywords_btn = ft.TextButton(text="Keywords Search", on_click=lambda e: _select_db_op("keywords"))
     byid_btn = ft.TextButton(text="Show by ID", on_click=lambda e: _select_db_op("by_id"))
@@ -750,6 +866,7 @@ def main(page: ft.Page):
                 ft.Text("Interactions", weight=ft.FontWeight.BOLD),
                 ft.Divider(),
                 combined_btn,
+                general_btn,
                 related_btn,
                 keywords_btn,
                 byid_btn,
