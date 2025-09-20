@@ -1,0 +1,270 @@
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List
+
+
+class _ExecScalars:
+    def __init__(self, items):
+        self._items = items
+
+    def all(self):
+        return list(self._items)
+
+
+class _ExecResult:
+    def __init__(self, items):
+        self._items = items
+
+    def scalars(self):
+        return _ExecScalars(self._items)
+
+
+class FakeChat:
+    def __init__(self, user_id: uuid.UUID, name: str):
+        now = datetime.now(timezone.utc)
+        self.id = uuid.uuid4()
+        self.user_id = user_id
+        self.name = name
+        self.created_at = now
+        self.updated_at = now
+
+
+class FakeMessage:
+    def __init__(self, chat_id: uuid.UUID, role: str, content: str):
+        self.id = uuid.uuid4()
+        self.chat_id = chat_id
+        self.role = role
+        self.content = content
+        self.created_at = datetime.now(timezone.utc)
+
+
+class FakeChatSession:
+    """Minimal async session facade for chats endpoints."""
+
+    def __init__(self, user_id: uuid.UUID, *, execute_kind: str):
+        self.user_id = user_id
+        self.execute_kind = execute_kind  # 'chats' or 'messages'
+        self.chats: Dict[uuid.UUID, FakeChat] = {}
+        self.messages: Dict[uuid.UUID, List[FakeMessage]] = {}
+
+    async def execute(self, stmt):
+        if self.execute_kind == "chats":
+            # Return chats of current user, newest first
+            items = sorted(
+                [c for c in self.chats.values() if c.user_id == self.user_id],
+                key=lambda c: c.created_at,
+                reverse=True,
+            )
+            return _ExecResult(items)
+        else:
+            # Return all messages for the only chat used in this test
+            if self.messages:
+                (cid, msgs), = self.messages.items()
+                items = sorted(msgs, key=lambda m: m.created_at)
+            else:
+                items = []
+            return _ExecResult(items)
+
+    def add(self, obj):
+        if hasattr(obj, "user_id") and hasattr(obj, "name"):
+            # Treat as Chat (works with real ORM instance too)
+            chat_id = getattr(obj, "id", None) or uuid.uuid4()
+            setattr(obj, "id", chat_id)
+            now = datetime.now(timezone.utc)
+            if not getattr(obj, "created_at", None):
+                setattr(obj, "created_at", now)
+            if not getattr(obj, "updated_at", None):
+                setattr(obj, "updated_at", now)
+            self.chats[chat_id] = obj  # store original instance
+        elif hasattr(obj, "chat_id") and hasattr(obj, "content"):
+            msg_id = getattr(obj, "id", None) or uuid.uuid4()
+            setattr(obj, "id", msg_id)
+            cid = getattr(obj, "chat_id")
+            if not getattr(obj, "created_at", None):
+                setattr(obj, "created_at", datetime.now(timezone.utc))
+            self.messages.setdefault(cid, []).append(obj)
+
+    async def flush(self):
+        return None
+
+    async def refresh(self, obj):
+        return None
+
+    async def commit(self):
+        return None
+
+    async def close(self):
+        return None
+
+    async def get(self, model, ident):
+        # Only Chat is requested in endpoints; return stored object if belongs to user
+        cid = uuid.UUID(str(ident))
+        ch = self.chats.get(cid)
+        return ch
+
+
+def _override_session(app, session: FakeChatSession):
+    from app.db.sa import get_session as dep_get_session
+
+    async def _gen():
+        yield session
+
+    app.dependency_overrides[dep_get_session] = _gen
+
+
+def _override_user(app, user_id: uuid.UUID):
+    from app.core import deps as core_deps
+
+    async def fixed_user():
+        class U:
+            id = user_id
+            email = "user@example.com"
+            is_active = True
+        return U()
+
+    app.dependency_overrides[core_deps.get_current_user] = fixed_user
+
+
+def test_create_and_list_chats(client):
+    from app import main as main_mod
+    uid = uuid.uuid4()
+    session = FakeChatSession(uid, execute_kind="chats")
+    _override_session(main_mod.app, session)
+    _override_user(main_mod.app, uid)
+
+    r1 = client.post("/api/chats/", json={"name": "First"})
+    assert r1.status_code == 200 or r1.status_code == 201
+    r2 = client.post("/api/chats/", json={"name": "Second"})
+    assert r2.status_code == 200 or r2.status_code == 201
+
+    lst = client.get("/api/chats/")
+    assert lst.status_code == 200
+    data = lst.json()
+    assert isinstance(data, list) and len(data) == 2
+    assert data[0]["name"] == "Second"
+    assert data[1]["name"] == "First"
+
+
+def test_add_and_list_messages(client):
+    from app import main as main_mod
+    uid = uuid.uuid4()
+    session = FakeChatSession(uid, execute_kind="messages")
+    _override_session(main_mod.app, session)
+    _override_user(main_mod.app, uid)
+
+    # Create a chat
+    r = client.post("/api/chats/", json={"name": "Topic"})
+    assert r.status_code == 200 or r.status_code == 201
+    chat_id = r.json()["id"]
+
+    # Add two messages
+    m1 = client.post(f"/api/chats/{chat_id}/messages", json={"role": "user", "content": "hello"})
+    assert m1.status_code == 200 or m1.status_code == 201
+    # ensure different timestamp ordering
+    session.messages[uuid.UUID(chat_id)][-1].created_at -= timedelta(seconds=1)
+    m2 = client.post(f"/api/chats/{chat_id}/messages", json={"role": "agent", "content": "hi"})
+    assert m2.status_code == 200 or m2.status_code == 201
+
+    # List messages
+    lst = client.get(f"/api/chats/{chat_id}/messages")
+    assert lst.status_code == 200
+    arr = lst.json()
+    assert [a["role"] for a in arr] == ["user", "agent"]
+
+
+def test_rename_chat(client):
+    from app import main as main_mod
+    uid = uuid.uuid4()
+    session = FakeChatSession(uid, execute_kind="chats")
+    _override_session(main_mod.app, session)
+    _override_user(main_mod.app, uid)
+
+    r = client.post("/api/chats/", json={"name": "Old"})
+    chat_id = r.json()["id"]
+
+    ren = client.patch(f"/api/chats/{chat_id}", json={"name": "New"})
+    assert ren.status_code == 200
+    assert ren.json()["name"] == "New"
+
+
+def test_unauthorized_access_returns_401_or_403(client):
+    from app import main as main_mod
+    from app.core import deps as core_deps
+    uid = uuid.uuid4()
+    session = FakeChatSession(uid, execute_kind="chats")
+    _override_session(main_mod.app, session)
+    # Temporarily remove auth override to simulate no Authorization header
+    prev = main_mod.app.dependency_overrides.pop(core_deps.get_current_user, None)
+    try:
+        r = client.get("/api/chats/")
+        assert r.status_code in (401, 403)
+    finally:
+        if prev is not None:
+            main_mod.app.dependency_overrides[core_deps.get_current_user] = prev
+
+
+def test_cannot_access_other_users_chat(client):
+    from app import main as main_mod
+    uid1 = uuid.uuid4()
+    uid2 = uuid.uuid4()
+    session = FakeChatSession(uid1, execute_kind="messages")
+    _override_session(main_mod.app, session)
+    _override_user(main_mod.app, uid1)
+
+    # Create chat under uid1
+    r = client.post("/api/chats/", json={"name": "Owner"})
+    chat_id = r.json()["id"]
+
+    # Switch to uid2 and try to interact
+    _override_user(main_mod.app, uid2)
+    # Add message -> 404
+    r_add = client.post(f"/api/chats/{chat_id}/messages", json={"role": "user", "content": "nope"})
+    assert r_add.status_code == 404
+    # Rename -> 404
+    r_ren = client.patch(f"/api/chats/{chat_id}", json={"name": "Hacked"})
+    assert r_ren.status_code == 404
+    # List messages -> 404
+    r_list = client.get(f"/api/chats/{chat_id}/messages")
+    assert r_list.status_code == 404
+
+
+def test_add_message_invalid_role_422(client):
+    from app import main as main_mod
+    uid = uuid.uuid4()
+    session = FakeChatSession(uid, execute_kind="messages")
+    _override_session(main_mod.app, session)
+    _override_user(main_mod.app, uid)
+
+    r = client.post("/api/chats/", json={"name": "Topic"})
+    chat_id = r.json()["id"]
+
+    bad = client.post(f"/api/chats/{chat_id}/messages", json={"role": "bad", "content": "x"})
+    assert bad.status_code == 422
+
+
+def test_list_messages_nonexistent_chat_404(client):
+    from app import main as main_mod
+    uid = uuid.uuid4()
+    session = FakeChatSession(uid, execute_kind="messages")
+    _override_session(main_mod.app, session)
+    _override_user(main_mod.app, uid)
+
+    fake_chat = uuid.uuid4()
+    r = client.get(f"/api/chats/{fake_chat}/messages")
+    assert r.status_code == 404
+
+
+def test_rename_chat_invalid_name_422(client):
+    from app import main as main_mod
+    uid = uuid.uuid4()
+    session = FakeChatSession(uid, execute_kind="chats")
+    _override_session(main_mod.app, session)
+    _override_user(main_mod.app, uid)
+
+    r = client.post("/api/chats/", json={"name": "Ok"})
+    chat_id = r.json()["id"]
+
+    res = client.patch(f"/api/chats/{chat_id}", json={"name": ""})
+    assert res.status_code == 422
