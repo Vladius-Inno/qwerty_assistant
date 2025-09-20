@@ -1,11 +1,11 @@
-﻿from __future__ import annotations
+﻿# -*- coding: utf-8 -*-
+from __future__ import annotations
 
 import asyncio
 import math
 import flet as ft
 
 from typing import Callable, Optional
-
 from api_client import AuthClient
 from config import settings
 
@@ -71,20 +71,20 @@ def main(page: ft.Page):
     )
 
     # ----- Auth UI -----
-    email = ft.TextField(label="Email", autofocus=True, width=360)
-    password = ft.TextField(label="Password", password=True, can_reveal_password=True, width=360)
+    email = ft.TextField(label="Эл. почта", autofocus=True, width=360)
+    password = ft.TextField(label="Пароль", password=True, can_reveal_password=True, width=360)
     auth_error = ft.Text(color=ft.Colors.RED, size=12, visible=False)
     toggle_mode = ft.SegmentedButton(
-        segments=[ft.Segment("login", label=ft.Text("Login")), ft.Segment("register", label=ft.Text("Register"))],
+        segments=[ft.Segment("login", label=ft.Text("Войти")), ft.Segment("register", label=ft.Text("Регистрация"))],
         selected=["login"],
         allow_multiple_selection=False,
         width=360,
     )
-    submit_btn = ft.ElevatedButton(text="Login", width=360)
+    submit_btn = ft.ElevatedButton(text="Войти", width=360)
 
     def on_toggle_change(_):
         selected_values = toggle_mode.selected or []
-        submit_btn.text = "Register" if "register" in selected_values else "Login"
+        submit_btn.text = "Регистрация" if "register" in selected_values else "Войти"
         auth_error.value = ""
         auth_error.visible = False
         page.update()
@@ -179,7 +179,7 @@ def main(page: ft.Page):
                 ),
             ])
         else:
-            profile_menu_content.controls.append(ft.Text("Not signed in"))
+            profile_menu_content.controls.append(ft.Text("Вход не выполнен"))
 
     # Profile dropdown card with header and a close (X) button
     def _close_profile_menu(_):
@@ -187,9 +187,9 @@ def main(page: ft.Page):
 
     profile_menu_header = ft.Row(
         controls=[
-            ft.Text("Profile", weight=ft.FontWeight.BOLD),
+            ft.Text("Профиль", weight=ft.FontWeight.BOLD),
             ft.Container(expand=True),
-            ft.IconButton(icon=ft.Icons.CLOSE, tooltip="Close", on_click=_close_profile_menu, icon_size=16),
+            ft.IconButton(icon=ft.Icons.CLOSE, tooltip="Закрыть", on_click=_close_profile_menu, icon_size=16),
         ],
         alignment=ft.MainAxisAlignment.START,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -239,7 +239,7 @@ def main(page: ft.Page):
             overlay_host.visible = False
             page.update()
 
-    profile_button = ft.IconButton(icon=ft.Icons.ACCOUNT_CIRCLE, tooltip="Profile", on_click=_toggle_profile_menu, disabled=True)
+    profile_button = ft.IconButton(icon=ft.Icons.ACCOUNT_CIRCLE, tooltip="Профиль", on_click=_toggle_profile_menu, disabled=True)
     appbar = ft.AppBar(title=ft.Text("Qwerty Assistant"), actions=[profile_button])
 
     # Research view: right messages + input (interactive area)
@@ -247,54 +247,93 @@ def main(page: ft.Page):
     status_text = ft.Text("", size=12, selectable=False)
     readonly_label = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT, visible=False)
     progress_row = ft.Row([ft.ProgressRing(), ft.Container(width=8), status_text], alignment=ft.MainAxisAlignment.START, visible=False)
-    chat_loading_text = ft.Text("Loading chat...", size=12, selectable=False)
+    chat_loading_text = ft.Text("Загрузка чата...", size=12, selectable=False)
     chat_loading_row = ft.Row([ft.ProgressRing(), ft.Container(width=8), chat_loading_text], alignment=ft.MainAxisAlignment.START, visible=False)
-    input_field = ft.TextField(hint_text="Type your research request...", multiline=True, min_lines=1, max_lines=7, expand=True)
-    send_btn = ft.IconButton(icon=ft.Icons.SEND, tooltip="Send")
+    input_field = ft.TextField(hint_text="Введите запрос для исследования...", multiline=True, min_lines=1, max_lines=7, expand=True)
+    try:
+        input_field.multiline = False
+    except Exception:
+        pass
+    send_btn = ft.IconButton(icon=ft.Icons.SEND, tooltip="Отправить")
 
     input_row = ft.Row(controls=[input_field, send_btn], alignment=ft.MainAxisAlignment.START)
-    right_area = ft.Column(controls=[messages_col, progress_row, chat_loading_row, readonly_label, input_row], expand=True, spacing=10)
+    # Capture Enter key in the input area to submit while keeping multiline visuals
+    def _on_input_key(e: ft.KeyboardEvent):
+        try:
+            if e.key == "Enter" and not e.shift and not sending and not is_read_only():
+                do_send(e)
+        except Exception:
+            pass
+    _KB = getattr(ft, "KeyboardListener", None)
+    if _KB is not None:
+        input_kb = _KB(content=input_row, on_event=_on_input_key)
+        right_area = ft.Column(controls=[messages_col, progress_row, chat_loading_row, readonly_label, input_kb], expand=True, spacing=10)
+    else:
+        right_area = ft.Column(controls=[messages_col, progress_row, chat_loading_row, readonly_label, input_row], expand=True, spacing=10)
 
     # Database interactions view (left: interactions menu replaces chats; right: controls + results)
     db_selected_op: str = "combined"  # combined | related | keywords | by_id
-    db_results_col = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
-    db_results_data: dict[str, list[dict]] = {"combined": [], "related": [], "keywords": [], "by_id": [], "general": []}
-    db_sort_state: dict[str, tuple[str, bool]] = {"combined": ("id", True), "related": ("id", True), "keywords": ("id", True), "by_id": ("id", True), "general": ("id", True)}
+    # Results panel: fixed header (count + loader), scrollable table area
+    db_count_text = ft.Text("\u041d\u0430\u0439\u0434\u0435\u043d\u043e: 0", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+    db_loader_row = ft.Row([ft.Text("Загрузка..."), ft.Container(width=8), ft.ProgressRing()], alignment=ft.MainAxisAlignment.START, visible=False)
+    db_table_container = ft.Container(expand=True)
+    db_results_col = ft.Column(
+        controls=[db_count_text, db_table_container, db_loader_row],
+        spacing=8,
+        expand=True,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+    )
+    # In-memory cache of last results per operation to support re-render/sorting without re-query
+    db_results_data: dict[str, list[dict]] = {
+        "combined": [],
+        "related": [],
+        "keywords": [],
+        "by_id": [],
+        "general": [],
+    }
+    # Sort state per operation
+    db_sort_state: dict[str, tuple[str, bool]] = {
+        "combined": ("id", True),
+        "related": ("id", True),
+        "keywords": ("id", True),
+        "by_id": ("id", True),
+        "general": ("id", True),
+    }
 
     # Controls per operation
     # Combined search controls
-    db_comb_query = ft.TextField(label="Query", expand=True)
-    db_comb_limit = ft.TextField(label="Limit", value="10", width=120)
-    db_comb_preselect = ft.TextField(label="Preselect", value="200", width=120)
+    db_comb_query = ft.TextField(label="Запрос", expand=True)
+    db_comb_limit = ft.TextField(label="Лимит", value="10", width=120)
+    db_comb_preselect = ft.TextField(label="Предвыборка", value="200", width=120)
     db_comb_alpha = ft.Slider(min=0.0, max=1.0, divisions=20, value=0.7, label="{value}")
-    db_comb_exec = ft.ElevatedButton(text="Execute")
+    db_comb_exec = ft.ElevatedButton(text="Выполнить")
 
     # Related controls
-    db_rel_id = ft.TextField(label="Article ID", width=180)
-    db_rel_method = ft.Dropdown(label="Method", width=160, options=[ft.dropdown.Option("semantic"), ft.dropdown.Option("cooccur")], value="semantic")
-    db_rel_topn = ft.TextField(label="Top N", value="10", width=120)
-    db_rel_exec = ft.ElevatedButton(text="Execute")
+    db_rel_id = ft.TextField(label="ID статьи", width=180)
+    db_rel_method = ft.Dropdown(label="Метод", width=160, options=[ft.dropdown.Option("semantic"), ft.dropdown.Option("cooccur")], value="semantic")
+    db_rel_topn = ft.TextField(label="Топ N", value="10", width=120)
+    db_rel_exec = ft.ElevatedButton(text="Выполнить")
 
     # Keywords search controls
-    db_kw_keywords = ft.TextField(label="Keywords (comma-separated)", expand=True)
-    db_kw_mode = ft.Dropdown(label="Mode", width=140, options=[ft.dropdown.Option("any"), ft.dropdown.Option("all")], value="any")
-    db_kw_partial = ft.Switch(label="Partial match", value=False)
-    db_kw_limit = ft.TextField(label="Limit", value="20", width=120)
-    db_kw_exec = ft.ElevatedButton(text="Execute")
+    db_kw_keywords = ft.TextField(label="Ключевые слова (через запятую)", expand=True)
+    db_kw_mode = ft.Dropdown(label="Режим", width=140, options=[ft.dropdown.Option("any"), ft.dropdown.Option("all")], value="any")
+    db_kw_partial = ft.Switch(label="Частичное совпадение", value=False)
+    db_kw_limit = ft.TextField(label="Лимит", value="20", width=120)
+    db_kw_exec = ft.ElevatedButton(text="Выполнить")
 
     # Show by ID controls
-    db_get_id = ft.TextField(label="Article ID", width=220)
-    db_get_exec = ft.ElevatedButton(text="Load")
+    db_get_id = ft.TextField(label="ID статьи", width=220)
+    db_get_exec = ft.ElevatedButton(text="Загрузить")
 
     # General list controls (Общий поиск)
-    db_gen_limit = ft.TextField(label="Limit", value="20", width=120)
-    db_gen_offset = ft.TextField(label="Offset", value="0", width=120)
-    db_gen_topic = ft.TextField(label="Topic", width=160)
-    db_gen_tag = ft.TextField(label="Tag", width=160)
-    db_gen_q = ft.TextField(label="Query", expand=True)
-    db_gen_date_from = ft.TextField(label="Date from (YYYY-MM-DD)", width=200)
-    db_gen_date_to = ft.TextField(label="Date to (YYYY-MM-DD)", width=200)
-    db_gen_exec = ft.ElevatedButton(text="Execute")
+    db_gen_limit = ft.TextField(label="Лимит", value="20", width=120)
+    db_gen_offset = ft.TextField(label="Смещение", value="0", width=120)
+    db_gen_topic = ft.TextField(label="Тема", width=160)
+    db_gen_tag = ft.TextField(label="Тег", width=160)
+    db_gen_q = ft.TextField(label="Запрос", expand=True)
+    db_gen_date_from = ft.TextField(label="Дата с (ГГГГ-ММ-ДД)", width=200)
+    db_gen_date_to = ft.TextField(label="Дата по (ГГГГ-ММ-ДД)", width=200)
+    db_gen_exec = ft.ElevatedButton(text="Выполнить")
 
     db_controls_col = ft.Column(spacing=10)
 
@@ -310,12 +349,12 @@ def main(page: ft.Page):
         def _open(_):
             if art_id is not None:
                 async def _open_task():
-                    await load_article_detail(art_id)
+                    await open_article_detail(art_id)
                 page.run_task(_open_task)
 
         return ft.ListTile(
             title=ft.Text(title),
-            subtitle=ft.Text(f"ID: {art_id_raw}  Date: {date}"),
+            subtitle=ft.Text(f"ID: {art_id_raw}  Дата: {date}"),
             on_click=_open,
         )
 
@@ -348,67 +387,73 @@ def main(page: ft.Page):
             else:
                 db_sort_state[db_selected_op] = (col, True)
             _render_results_for_op()
-            page.update()
+        db_loader_row.visible = False
+        page.update()
 
-        # Build table
+        # Build fixed header + scrollable body
         def make_header_btn(text: str, col_key: str) -> ft.Control:
             cur_key, cur_asc = db_sort_state.get(db_selected_op, ("id", True))
-            marker = "▲" if (col_key == cur_key and cur_asc) else ("▼" if col_key == cur_key else "")
-            return ft.TextButton(text=f"{text} {marker}".strip(), on_click=lambda e, ck=col_key: set_sort(ck))
+            icon = None
+            if col_key == cur_key:
+                icon = ft.Icons.ARROW_DROP_UP if cur_asc else ft.Icons.ARROW_DROP_DOWN
+            return ft.TextButton(text=text, icon=icon, on_click=lambda e, ck=col_key: set_sort(ck))
 
-        rows: list[ft.DataRow] = []
+        header_row = ft.Row(
+            controls=[
+                ft.Container(width=100, content=make_header_btn("ID", "id")),
+                ft.Container(width=160, content=make_header_btn("\u0414\u0430\u0442\u0430", "date")),
+                ft.Container(expand=True, content=make_header_btn("\u0417\u0430\u0433\u043e\u043b\u043e\u0432\u043e\u043a", "title"))
+            ],
+            height=48,
+            alignment=ft.MainAxisAlignment.START,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        def open_detail(aid_local: int | None):
+            if aid_local is None:
+                return
+            async def _open_task():
+                await open_article_detail(int(aid_local))
+            page.run_task(_open_task)
+
+        rows_controls: list[ft.Control] = []
         for rec in items:
             aid = rec.get("id")
             date = rec.get("date")
             title = rec.get("title") or ""
-
-            def open_detail(aid_local: int | None):
-                if aid_local is None:
-                    return
-                async def _open_task():
-                    await load_article_detail(int(aid_local))
-                page.run_task(_open_task)
-
-            # Cells: make ID and Title clickable
             try:
                 aid_int = int(aid)
             except Exception:
                 aid_int = None
-            id_cell = ft.DataCell(ft.TextButton(text=str(aid), on_click=lambda e, x=aid_int: open_detail(x)))
-            date_cell = ft.DataCell(ft.Text(str(date or "")))
-            title_cell = ft.DataCell(ft.TextButton(text=str(title), on_click=lambda e, x=aid_int: open_detail(x)))
-            rows.append(ft.DataRow(cells=[id_cell, date_cell, title_cell]))
+            row = ft.Row(
+                controls=[
+                    ft.Container(width=100, content=ft.TextButton(text=str(aid), on_click=lambda e, x=aid_int: open_detail(x))),
+                    ft.Container(width=160, content=ft.Text(str(date or ""))),
+                    ft.Container(expand=True, content=ft.TextButton(text=str(title), on_click=lambda e, x=aid_int: open_detail(x))),
+                ],
+                height=48,
+                alignment=ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+            rows_controls.append(row)
 
-        table = ft.DataTable(
-            columns=[
-                ft.DataColumn(label=make_header_btn("ID", "id")),
-                ft.DataColumn(label=make_header_btn("Date", "date")),
-                ft.DataColumn(label=make_header_btn("Title", "title")),
-            ],
-            rows=rows,
-            data_row_max_height=48,
-            heading_row_height=48,
-            column_spacing=24,
-            sort_column_index=["id", "date", "title"].index(sort_key),
-            sort_ascending=asc,
-        )
-        count_text = ft.Text(f"Results: {len(items)}", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
-        db_results_col.controls = [count_text, table]
-
+        rows_list = ft.ListView(controls=rows_controls, expand=True, spacing=0)
+        count_text = ft.Text(f"\u041d\u0430\u0439\u0434\u0435\u043d\u043e: {len(items)}", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        db_results_col.controls = [count_text, header_row, rows_list, db_loader_row]
     def _show_db_list_view():
         db_detail_container.visible = False
         # controls area
         if db_selected_op == "combined":
             controls_row1 = ft.Row([db_comb_query])
-            controls_row2 = ft.Row([db_comb_limit, db_comb_preselect, ft.Text("Alpha"), db_comb_alpha, db_comb_exec])
+            controls_row2 = ft.Row([db_comb_limit, db_comb_preselect, ft.Text("Альфа"), db_comb_alpha, db_comb_exec])
             db_controls_col.controls = [ft.Text("Семантико-текстовый поиск", weight=ft.FontWeight.BOLD), controls_row1, controls_row2]
         elif db_selected_op == "related":
             controls_row = ft.Row([db_rel_id, db_rel_method, db_rel_topn, db_rel_exec])
-            db_controls_col.controls = [ft.Text("Related Articles", weight=ft.FontWeight.BOLD), controls_row]
+            db_controls_col.controls = [ft.Text("Связанные статьи", weight=ft.FontWeight.BOLD), controls_row]
         elif db_selected_op == "keywords":
             controls_row1 = ft.Row([db_kw_keywords])
             controls_row2 = ft.Row([db_kw_mode, db_kw_partial, db_kw_limit, db_kw_exec])
-            db_controls_col.controls = [ft.Text("Keywords Search", weight=ft.FontWeight.BOLD), controls_row1, controls_row2]
+            db_controls_col.controls = [ft.Text("Поиск по ключевым словам", weight=ft.FontWeight.BOLD), controls_row1, controls_row2]
         elif db_selected_op == "general":
             controls_row1 = ft.Row([db_gen_q])
             controls_row2 = ft.Row([db_gen_limit, db_gen_offset, db_gen_topic, db_gen_tag])
@@ -416,31 +461,47 @@ def main(page: ft.Page):
             db_controls_col.controls = [ft.Text("Общий поиск", weight=ft.FontWeight.BOLD), controls_row1, controls_row2, controls_row3]
         else:  # by_id
             controls_row = ft.Row([db_get_id, db_get_exec])
-            db_controls_col.controls = [ft.Text("Show Article by ID", weight=ft.FontWeight.BOLD), controls_row]
+            db_controls_col.controls = [ft.Text("Показать статью по ID", weight=ft.FontWeight.BOLD), controls_row]
         # mount list view
         _render_results_for_op()
-        list_panel = ft.Column(controls=[db_controls_col, ft.Divider(), db_results_col], expand=True, spacing=10)
-        db_main_container.content = list_panel
+        list_panel = ft.Column(controls=[db_controls_col, ft.Divider(), db_results_col], expand=True, spacing=10, alignment=ft.MainAxisAlignment.START)
+        db_scroll_host.controls = [list_panel]
         page.update()
 
     def _show_db_detail_view(data: dict):
         # data is ArticleFull
-        back_btn = ft.TextButton(text="Back", icon=ft.Icons.ARROW_BACK, on_click=lambda e: _show_db_list_view())
-        header = ft.Row([back_btn, ft.Text(str(data.get("title") or "Article"), weight=ft.FontWeight.BOLD, size=22)], alignment=ft.MainAxisAlignment.START)
+        back_btn = ft.TextButton(text="Назад", icon=ft.Icons.ARROW_BACK, on_click=lambda e: _show_db_list_view())
+        header = ft.Row([back_btn, ft.Text(str(data.get("title") or "Статья"), weight=ft.FontWeight.BOLD, size=22)], alignment=ft.MainAxisAlignment.START)
         # Top meta line: ID, Date, Release, Topic (with localized labels)
         id_val = data.get("id")
         date_val = data.get("date")
         rel_val = data.get("release_number")
         topic_val = data.get("topic_name")
+
+        # Related button: open related search for current article
+        def _open_related(_):
+            nonlocal db_selected_op
+            db_selected_op = "related"
+            _update_db_menu_labels()
+            db_rel_id.value = str(id_val) if id_val is not None else ""
+            db_rel_method.value = "semantic"
+            db_rel_topn.value = "10"
+            _show_db_list_view()
+            page.run_task(_exec_related)
+
         top_meta = ft.Row([
             ft.Text(f"ID: {id_val}"),
             ft.Container(width=12),
-            ft.Text(f"Date: {date_val}") if date_val is not None else ft.Container(),
+            ft.Text(f"Дата: {date_val}") if date_val is not None else ft.Container(),
             ft.Container(width=12),
             ft.Text(f"№ выпуска: {rel_val}") if rel_val is not None else ft.Container(),
             ft.Container(width=12),
             ft.Text(f"Тема: {topic_val}") if topic_val else ft.Container(),
+            ft.Container(width=12),
+            ft.ElevatedButton(text="Связанные статьи", on_click=_open_related),
         ], wrap=True, alignment=ft.MainAxisAlignment.START)
+
+        
 
         # Keywords (clickable -> open Keywords Search prefilled)
         kw_controls: list[ft.Control] = []
@@ -458,7 +519,7 @@ def main(page: ft.Page):
                     _show_db_list_view()
                     page.run_task(_exec_keywords)
                 return handler
-            kw_controls = [ft.Text("Keywords:"), ft.Row(controls=[ft.Chip(label=ft.Text(k), on_click=_kw_click(k)) for k in data.get("keywords")], spacing=6, wrap=True, run_spacing=6)]
+            kw_controls = [ft.Text("Ключевые слова:"), ft.Row(controls=[ft.Chip(label=ft.Text(k), on_click=_kw_click(k)) for k in data.get("keywords")], spacing=6, wrap=True, run_spacing=6)]
 
         # Tags as chips (clickable -> open Общий поиск with tag preset)
         tag_controls: list[ft.Control] = []
@@ -479,7 +540,7 @@ def main(page: ft.Page):
                     _show_db_list_view()
                     page.run_task(_exec_general)
                 return handler
-            tag_controls = [ft.Text("Tags:"), ft.Row(controls=[ft.Chip(label=ft.Text(t), on_click=_tag_click(t)) for t in data.get("tags")], spacing=6, wrap=True, run_spacing=6)]
+            tag_controls = [ft.Text("Теги:"), ft.Row(controls=[ft.Chip(label=ft.Text(t), on_click=_tag_click(t)) for t in data.get("tags")], spacing=6, wrap=True, run_spacing=6)]
 
         # Links
         link_controls: list[ft.Control] = []
@@ -487,10 +548,10 @@ def main(page: ft.Page):
             return ft.TextButton(text=label, on_click=lambda e, u=url: page.launch_url(u))
         src = data.get("source_link")
         if isinstance(src, str) and src:
-            link_controls.append(link_btn("Source", src))
+            link_controls.append(link_btn("Источник", src))
         artl = data.get("article_link")
         if isinstance(artl, str) and artl:
-            link_controls.append(link_btn("Article", artl))
+            link_controls.append(link_btn("Статья", artl))
         extra = data.get("extra_links")
         if isinstance(extra, dict):
             for k, v in extra.items():
@@ -514,17 +575,32 @@ def main(page: ft.Page):
             expand=True,
         )
         db_detail_container.visible = True
-        db_main_container.content = db_detail_container
+        db_scroll_host.controls = [db_detail_container]
         page.update()
-
     async def load_article_detail(article_id: int):
+        db_scroll_host.controls = [ft.Row([ft.Text("\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430..."), ft.Container(width=8), ft.ProgressRing()], alignment=ft.MainAxisAlignment.START)]
+        page.update()
         art = await asyncio.to_thread(client.articles_get, article_id)
         if not art:
-            show_notice("Article not found")
+            show_notice("\u0421\u0442\u0430\u0442\u044c\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430")
             return
         _show_db_detail_view(art)
 
-    # Execute handlers
+    async def open_article_detail(article_id: int):
+        # Wrapper that ensures spinner is cleared and view restored on errors
+        spinner = ft.Row([ft.Text("\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430..."), ft.Container(width=8), ft.ProgressRing()], alignment=ft.MainAxisAlignment.START)
+        db_scroll_host.controls = [spinner]
+        page.update()
+        art = None
+        try:
+            art = await asyncio.to_thread(client.articles_get, article_id)
+            if not art:
+                raise Exception("not found")
+            _show_db_detail_view(art)
+        except Exception:
+            _show_db_list_view()
+            show_notice("\u0421\u0442\u0430\u0442\u044c\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430")
+
     async def _exec_combined():
         try:
             q = db_comb_query.value or ""
@@ -532,14 +608,12 @@ def main(page: ft.Page):
             preselect = int(db_comb_preselect.value or "200")
             alpha = float(db_comb_alpha.value or 0.7)
         except Exception:
-            show_notice("Invalid parameters for combined search")
+            show_notice("Неверные параметры для поиска")
             return
-        db_results_col.controls = [ft.Text("Loading..."), ft.ProgressRing()]
+        db_loader_row.visible = True
         page.update()
-        # Prefer protected agent endpoint if available; fallback to public
         data = await asyncio.to_thread(client.agent_combined_search, q, limit, preselect, alpha)
         if not data:
-            # try public
             data_list = await asyncio.to_thread(client.articles_combined_search, q, limit, preselect, alpha)
         else:
             data_list = data.get("result") if isinstance(data, dict) else None
@@ -547,7 +621,6 @@ def main(page: ft.Page):
         if isinstance(data_list, list):
             for item in data_list:
                 if isinstance(item, dict):
-                    # normalize minimal fields
                     items_data.append({
                         "id": item.get("id"),
                         "date": item.get("date"),
@@ -555,6 +628,7 @@ def main(page: ft.Page):
                     })
         db_results_data["combined"] = items_data
         _render_results_for_op()
+        db_loader_row.visible = False
         page.update()
 
     async def _exec_related():
@@ -563,10 +637,9 @@ def main(page: ft.Page):
             topn = int(db_rel_topn.value or "10")
             method = db_rel_method.value or "semantic"
         except Exception:
-            show_notice("Invalid parameters for related search")
+            show_notice("Статья не найдена")
             return
-        db_results_col.controls = [ft.Text("Loading..."), ft.ProgressRing()]
-        page.update()
+        db_loader_row.visible = True
         lst = await asyncio.to_thread(client.articles_related, aid, method, topn)
         items_data: list[dict] = []
         if isinstance(lst, list):
@@ -579,6 +652,7 @@ def main(page: ft.Page):
                     })
         db_results_data["related"] = items_data
         _render_results_for_op()
+        db_loader_row.visible = False
         page.update()
 
     async def _exec_keywords():
@@ -589,10 +663,9 @@ def main(page: ft.Page):
             partial = bool(db_kw_partial.value)
             limit = int(db_kw_limit.value or "20")
         except Exception:
-            show_notice("Invalid parameters for keywords search")
+            show_notice("Статья не найдена")
             return
-        db_results_col.controls = [ft.Text("Loading..."), ft.ProgressRing()]
-        page.update()
+        db_loader_row.visible = True
         resp = await asyncio.to_thread(
             client.articles_search_keywords,
             keywords=kws,
@@ -614,6 +687,7 @@ def main(page: ft.Page):
                         })
         db_results_data["keywords"] = items_data
         _render_results_for_op()
+        db_loader_row.visible = False
         page.update()
 
     async def _exec_general():
@@ -626,10 +700,9 @@ def main(page: ft.Page):
             date_from = (db_gen_date_from.value or "").strip() or None
             date_to = (db_gen_date_to.value or "").strip() or None
         except Exception:
-            show_notice("Invalid parameters for general search")
+            show_notice("Статья не найдена")
             return
-        db_results_col.controls = [ft.Text("Loading..."), ft.ProgressRing()]
-        page.update()
+        db_loader_row.visible = True
         lst = await asyncio.to_thread(
             client.articles_list,
             limit=limit,
@@ -651,15 +724,16 @@ def main(page: ft.Page):
                     })
         db_results_data["general"] = items_data
         _render_results_for_op()
+        db_loader_row.visible = False
         page.update()
 
     async def _exec_get():
         try:
             aid = int(db_get_id.value or "0")
         except Exception:
-            show_notice("Invalid article id")
+            show_notice("Статья не найдена")
             return
-        await load_article_detail(aid)
+        await open_article_detail(aid)
 
     db_comb_exec.on_click = lambda e: page.run_task(_exec_combined)
     db_rel_exec.on_click = lambda e: page.run_task(_exec_related)
@@ -670,26 +744,18 @@ def main(page: ft.Page):
     # Commit (execute) on Enter for all TextFields in search options
     # Семантико-текстовый поиск
     db_comb_query.on_submit = lambda e: page.run_task(_exec_combined)
-    db_comb_limit.on_submit = lambda e: page.run_task(_exec_combined)
-    db_comb_preselect.on_submit = lambda e: page.run_task(_exec_combined)
     # Связанные статьи
     db_rel_id.on_submit = lambda e: page.run_task(_exec_related)
-    db_rel_topn.on_submit = lambda e: page.run_task(_exec_related)
     # Поиск по ключевым словам
     db_kw_keywords.on_submit = lambda e: page.run_task(_exec_keywords)
-    db_kw_limit.on_submit = lambda e: page.run_task(_exec_keywords)
     # Показ по ID
     db_get_id.on_submit = lambda e: page.run_task(_exec_get)
     # Общий поиск
     db_gen_q.on_submit = lambda e: page.run_task(_exec_general)
-    db_gen_limit.on_submit = lambda e: page.run_task(_exec_general)
-    db_gen_offset.on_submit = lambda e: page.run_task(_exec_general)
-    db_gen_topic.on_submit = lambda e: page.run_task(_exec_general)
-    db_gen_tag.on_submit = lambda e: page.run_task(_exec_general)
-    db_gen_date_from.on_submit = lambda e: page.run_task(_exec_general)
-    db_gen_date_to.on_submit = lambda e: page.run_task(_exec_general)
 
-    db_main_container = ft.Container(expand=True)
+    # Keep search controls fixed; only the results body (rows) will scroll
+    db_scroll_host = ft.Column(expand=True, alignment=ft.MainAxisAlignment.START)
+    db_main_container = ft.Container(expand=True, content=db_scroll_host, alignment=ft.alignment.top_left)
     # Defer initial DB view rendering until Database section is selected
 
     # Left sidebar: upper small menu, lower larger chats placeholder
@@ -710,17 +776,18 @@ def main(page: ft.Page):
             # Reset to default op view
             _show_db_list_view()
             _update_db_menu_labels()
-        research_btn.text = "Research" + (" \u2713" if name == "research" else "")
-        database_btn.text = "Database" + (" \u2713" if name == "database" else "")
+        research_btn.text = "Исследование" + (" \u2713" if name == "research" else "")
+        database_btn.text = "База данных" + (" \u2713" if name == "database" else "")
+
         page.update()
 
-    research_btn = ft.TextButton(text="Research \u2713", on_click=lambda e: _set_section("research"))
-    database_btn = ft.TextButton(text="Database", on_click=lambda e: _set_section("database"))
+    research_btn = ft.TextButton(text="Исследование \u2713", on_click=lambda e: _set_section("research"))
+    database_btn = ft.TextButton(text="База данных", on_click=lambda e: _set_section("database"))
 
     menu_panel = ft.Container(
         padding=10,
         content=ft.Column(
-            controls=[ft.Text("Menu", weight=ft.FontWeight.BOLD), research_btn, database_btn],
+            controls=[ft.Text("Меню", weight=ft.FontWeight.BOLD), research_btn, database_btn],
             spacing=6,
         ),
     )
@@ -778,7 +845,7 @@ def main(page: ft.Page):
                 return _on_click
             tiles.append(ft.ListTile(title=ft.Text(name), on_click=_make_handler(ch_id)))
         if not tiles:
-            tiles = [ft.Container(padding=10, content=ft.Text("No chats yet", color=ft.Colors.ON_SURFACE_VARIANT, size=12))]
+            tiles = [ft.Container(padding=10, content=ft.Text("Чатов пока нет", color=ft.Colors.ON_SURFACE_VARIANT, size=12))]
         chats_list.controls = tiles
         page.update()
 
@@ -793,7 +860,7 @@ def main(page: ft.Page):
         nonlocal current_chat_id, viewing_chat_id
         resp = client.chats_create()
         if not isinstance(resp, dict) or "id" not in resp:
-            show_notice("Failed to create a new chat")
+            show_notice("Статья не найдена")
             return
         current_chat_id = str(resp["id"])
         viewing_chat_id = current_chat_id
@@ -823,12 +890,12 @@ def main(page: ft.Page):
         _render_chats()
         page.update()
 
-    new_chat_btn = ft.ElevatedButton(text="New Chat", on_click=start_new_chat, disabled=True)
+    new_chat_btn = ft.ElevatedButton(text="Новый чат", on_click=start_new_chat, disabled=True)
     chats_panel = ft.Container(
         padding=10,
         content=ft.Column(
             controls=[
-                ft.Row([ft.Text("Chats", weight=ft.FontWeight.BOLD), new_chat_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.Row([ft.Text("Чаты", weight=ft.FontWeight.BOLD), new_chat_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 ft.Divider(),
                 chats_list,
                 ft.Divider(),
@@ -848,22 +915,22 @@ def main(page: ft.Page):
     def _update_db_menu_labels():
         combined_btn.text = ("• " if db_selected_op == "combined" else "  ") + "Семантико-текстовый поиск"
         general_btn.text = ("• " if db_selected_op == "general" else "  ") + "Общий поиск"
-        related_btn.text = ("• " if db_selected_op == "related" else "  ") + "Related Articles"
-        keywords_btn.text = ("• " if db_selected_op == "keywords" else "  ") + "Keywords Search"
-        byid_btn.text = ("• " if db_selected_op == "by_id" else "  ") + "Show by ID"
+        related_btn.text = ("• " if db_selected_op == "related" else "  ") + "Связанные статьи"
+        keywords_btn.text = ("• " if db_selected_op == "keywords" else "  ") + "Поиск по ключевым словам"
+        byid_btn.text = ("• " if db_selected_op == "by_id" else "  ") + "Показать статью по ID"
 
     combined_btn = ft.TextButton(text="Семантико-текстовый поиск", on_click=lambda e: _select_db_op("combined"))
     general_btn = ft.TextButton(text="Общий поиск", on_click=lambda e: _select_db_op("general"))
-    related_btn = ft.TextButton(text="Related Articles", on_click=lambda e: _select_db_op("related"))
-    keywords_btn = ft.TextButton(text="Keywords Search", on_click=lambda e: _select_db_op("keywords"))
-    byid_btn = ft.TextButton(text="Show by ID", on_click=lambda e: _select_db_op("by_id"))
+    related_btn = ft.TextButton(text="Связанные статьи", on_click=lambda e: _select_db_op("related"))
+    keywords_btn = ft.TextButton(text="Поиск по ключевым словам", on_click=lambda e: _select_db_op("keywords"))
+    byid_btn = ft.TextButton(text="Показать статью по ID", on_click=lambda e: _select_db_op("by_id"))
     _update_db_menu_labels()
     db_panel = ft.Container(
         padding=10,
         visible=False,
         content=ft.Column(
             controls=[
-                ft.Text("Interactions", weight=ft.FontWeight.BOLD),
+                ft.Text("Взаимодействия", weight=ft.FontWeight.BOLD),
                 ft.Divider(),
                 combined_btn,
                 general_btn,
@@ -899,7 +966,7 @@ def main(page: ft.Page):
         controls=[
             ft.ProgressRing(),
             ft.Container(height=8),
-            ft.Text("Restoring session..."),
+            ft.Text("Восстановление сеанса..."),
         ],
         visible=False,
         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -934,7 +1001,7 @@ def main(page: ft.Page):
         send_btn.disabled = ro or sending
         readonly_label.visible = ro and not sending
         if ro:
-            readonly_label.value = "Viewing past chat — read-only"
+            readonly_label.value = "Просмотр прошлой переписки — только чтение"
         else:
             readonly_label.value = ""
         page.update()
@@ -950,7 +1017,7 @@ def main(page: ft.Page):
 
     async def load_chat_messages(chat_id: str):
         # Show loader while retrieving
-        chat_loading_text.value = "Loading chat..."
+        chat_loading_text.value = "Загрузка чата..."
         chat_loading_row.visible = True
         page.update()
         try:
@@ -970,18 +1037,18 @@ def main(page: ft.Page):
         try:
             start_resp = await asyncio.to_thread(client.agent_loop_start, prompt, 3)
         except Exception as e:
-            add_message("agent", f"Error starting job: {e}")
+            add_message("agent", f"Ошибка запуска задания: {e}")
             set_sending(False)
             return
         if not isinstance(start_resp, dict) or "job_id" not in start_resp:
-            add_message("agent", "Failed to start agent job.")
+            add_message("agent", "Не удалось запустить задание агента.")
             set_sending(False)
             return
         job_id = start_resp["job_id"]
 
         # Poll status until done or error with a guard against silent failures
         try:
-            status_text.value = "Starting agent..."
+            status_text.value = "Запуск агента..."
             page.update()
             invalid_count = 0
             while True:
@@ -989,7 +1056,7 @@ def main(page: ft.Page):
                 if not isinstance(status_resp, dict):
                     invalid_count += 1
                     if invalid_count >= 8:  # ~12s with 1.5s sleep
-                        add_message("agent", "Failed to fetch job status. Please try again.")
+                        add_message("agent", "Не удалось получить статус задания. Попробуйте ещё раз.")
                         break
                     await asyncio.sleep(1.5)
                     continue
@@ -1001,10 +1068,10 @@ def main(page: ft.Page):
                     page.update()
                 if status == "done":
                     result = status_resp.get("result")
-                    add_message("agent", str(result) if result else "No response.")
+                    add_message("agent", str(result) if result else "Нет ответа.")
                     break
                 if status == "error":
-                    add_message("agent", f"Error: {status_resp.get('error')}")
+                    add_message("agent", f"Ошибка: {status_resp.get('error')}")
                     break
                 await asyncio.sleep(1.5)
         finally:
@@ -1019,11 +1086,11 @@ def main(page: ft.Page):
         if not prompt:
             return
         if is_read_only():
-            show_notice("Cannot send in read-only chat; start a New Chat")
+            show_notice("Статья не найдена")
             update_input_enabled()
             return
         set_sending(True)
-        status_text.value = "Starting agent..."
+        status_text.value = "Запуск агента..."
         add_message("user", prompt)
         if rename_pending and not rename_source_prompt:
             rename_source_prompt = prompt
@@ -1146,7 +1213,7 @@ def main(page: ft.Page):
         try:
             if "register" in (toggle_mode.selected or []):
                 client.register(email.value, password.value)
-                show_notice("Registration successful. You are now logged in.")
+                show_notice("Статья не найдена")
             else:
                 client.login(email.value, password.value)
         except Exception as e:
@@ -1165,7 +1232,7 @@ def main(page: ft.Page):
         else:
             # Proceed to main even if /me fails; tokens are set after login
             show_main_view({})
-            show_notice("Logged in. Profile fetch failed; continuing anyway.")
+            show_notice("Статья не найдена")
 
     submit_btn.on_click = do_submit
     # Enter-to-submit on auth fields
@@ -1239,6 +1306,29 @@ if __name__ == "__main__":
     # Allows running with: python qwerty_webapp/app/app.py
     # In Docker, FLET_SERVER_* env vars make it serve as a web app on the given port.
     ft.app(target=main)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

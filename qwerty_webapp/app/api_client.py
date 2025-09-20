@@ -295,6 +295,39 @@ class AuthClient:
         except Exception:
             return None
 
+    def articles_list(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        topic: str | None = None,
+        tag: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        q: str | None = None,
+    ) -> list[dict] | None:
+        try:
+            params: dict = {"limit": limit, "offset": offset}
+            if topic:
+                params["topic"] = topic
+            if tag:
+                params["tag"] = tag
+            if date_from:
+                params["date_from"] = date_from
+            if date_to:
+                params["date_to"] = date_to
+            if q:
+                params["q"] = q
+            resp = self._client.get("/api/articles/", params=params)
+            if resp.status_code >= 400:
+                return None
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+            return None
+        except Exception:
+            return None
+
     def chats_list(self) -> list[dict] | None:
         resp = self._protected_request("GET", "/api/chats/")
         if resp.status_code >= 400:
