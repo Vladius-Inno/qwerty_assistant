@@ -468,6 +468,35 @@ def main(page: ft.Page):
         _render_results_for_op()
         list_panel = ft.Column(controls=[db_controls_col, ft.Divider(), db_results_col], expand=True, spacing=10, alignment=ft.MainAxisAlignment.START)
         db_scroll_host.controls = [list_panel]
+        # Set focus to primary input for current operation
+        try:
+            if db_selected_op == "combined":
+                if hasattr(page, "set_focus"):
+                    page.set_focus(db_comb_query)
+                elif hasattr(db_comb_query, "focus"):
+                    db_comb_query.focus()
+            elif db_selected_op == "related":
+                if hasattr(page, "set_focus"):
+                    page.set_focus(db_rel_id)
+                elif hasattr(db_rel_id, "focus"):
+                    db_rel_id.focus()
+            elif db_selected_op == "keywords":
+                if hasattr(page, "set_focus"):
+                    page.set_focus(db_kw_keywords)
+                elif hasattr(db_kw_keywords, "focus"):
+                    db_kw_keywords.focus()
+            elif db_selected_op == "general":
+                if hasattr(page, "set_focus"):
+                    page.set_focus(db_gen_q)
+                elif hasattr(db_gen_q, "focus"):
+                    db_gen_q.focus()
+            else:  # by_id
+                if hasattr(page, "set_focus"):
+                    page.set_focus(db_get_id)
+                elif hasattr(db_get_id, "focus"):
+                    db_get_id.focus()
+        except Exception:
+            pass
         page.update()
 
     def _show_db_detail_view(data: dict):
