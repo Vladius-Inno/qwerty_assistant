@@ -230,6 +230,104 @@ class AuthClient:
             return None
         return resp.json()
 
+    # --- Articles API (public) ---
+    def articles_related(self, article_id: int, method: str = "semantic", top_n: int = 10) -> list[dict] | None:
+        try:
+            resp = self._client.get(
+                f"/api/articles/{article_id}/related",
+                params={"method": method, "top_n": top_n},
+            )
+            if resp.status_code >= 400:
+                return None
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+            return None
+        except Exception:
+            return None
+
+    def articles_get(self, article_id: int) -> dict | None:
+        try:
+            resp = self._client.get(f"/api/articles/{article_id}")
+            if resp.status_code >= 400:
+                return None
+            return resp.json()
+        except Exception:
+            return None
+
+    def articles_search_keywords(
+        self,
+        *,
+        keywords: list[str] | None = None,
+        q: str | None = None,
+        mode: str = "any",
+        partial: bool = False,
+        limit: int = 20,
+    ) -> dict | None:
+        try:
+            params: dict = {"mode": mode, "partial": str(partial).lower(), "limit": limit}
+            if keywords:
+                params["keyword"] = keywords
+            elif q:
+                params["q"] = q
+            else:
+                params["q"] = ""
+            resp = self._client.get("/api/articles/search/keywords", params=params)
+            if resp.status_code >= 400:
+                return None
+            return resp.json()
+        except Exception:
+            return None
+
+    def articles_combined_search(self, query: str, limit: int = 10, preselect: int = 200, alpha: float = 0.7) -> list[dict] | None:
+        """
+        Public combined search variant via /api/articles/search (returns list of metas or ids/title/date).
+        Prefer agent_combined_search when auth is available. This is a convenience wrapper.
+        """
+        try:
+            resp = self._client.get("/api/articles/search", params={"q": query, "limit": limit})
+            if resp.status_code >= 400:
+                return None
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+            return None
+        except Exception:
+            return None
+
+    def articles_list(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        topic: str | None = None,
+        tag: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        q: str | None = None,
+    ) -> list[dict] | None:
+        try:
+            params: dict = {"limit": limit, "offset": offset}
+            if topic:
+                params["topic"] = topic
+            if tag:
+                params["tag"] = tag
+            if date_from:
+                params["date_from"] = date_from
+            if date_to:
+                params["date_to"] = date_to
+            if q:
+                params["q"] = q
+            resp = self._client.get("/api/articles/", params=params)
+            if resp.status_code >= 400:
+                return None
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+            return None
+        except Exception:
+            return None
+
     def chats_list(self) -> list[dict] | None:
         resp = self._protected_request("GET", "/api/chats/")
         if resp.status_code >= 400:
