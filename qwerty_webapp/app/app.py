@@ -440,6 +440,8 @@ def main(page: ft.Page):
         rows_list = ft.ListView(controls=rows_controls, expand=True, spacing=0)
         count_text = ft.Text(f"\u041d\u0430\u0439\u0434\u0435\u043d\u043e: {len(items)}", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
         db_results_col.controls = [count_text, header_row, rows_list, db_loader_row]
+        # Ensure header icon state updates immediately after sort change
+        page.update()
     def _show_db_list_view():
         db_detail_container.visible = False
         # controls area
