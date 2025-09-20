@@ -258,6 +258,8 @@ def main(page: ft.Page):
     # Database interactions view (left: interactions menu replaces chats; right: controls + results)
     db_selected_op: str = "combined"  # combined | related | keywords | by_id
     db_results_col = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
+    db_results_data: dict[str, list[dict]] = {"combined": [], "related": [], "keywords": [], "by_id": []}
+    db_sort_state: dict[str, tuple[str, bool]] = {"combined": ("id", True), "related": ("id", True), "keywords": ("id", True), "by_id": ("id", True)}
 
     # Controls per operation
     # Combined search controls
@@ -310,14 +312,86 @@ def main(page: ft.Page):
     db_detail_container = ft.Container(visible=False)
     db_content_stack = ft.Stack(controls=[], expand=True)
 
+    def _render_results_for_op():
+        # Render table for current op from stored data with sort state
+        items = list(db_results_data.get(db_selected_op) or [])
+        sort_key, asc = db_sort_state.get(db_selected_op, ("id", True))
+
+        def key_fn(rec: dict):
+            if sort_key == "id":
+                try:
+                    return int(rec.get("id") or 0)
+                except Exception:
+                    return 0
+            if sort_key == "date":
+                v = rec.get("date")
+                return str(v or "")
+            return str(rec.get("title") or "")
+
+        items.sort(key=key_fn, reverse=not asc)
+
+        def set_sort(col: str):
+            nonlocal db_sort_state
+            cur_key, cur_asc = db_sort_state.get(db_selected_op, ("id", True))
+            if col == cur_key:
+                db_sort_state[db_selected_op] = (col, not cur_asc)
+            else:
+                db_sort_state[db_selected_op] = (col, True)
+            _render_results_for_op()
+            page.update()
+
+        # Build table
+        def make_header_btn(text: str, col_key: str) -> ft.Control:
+            cur_key, cur_asc = db_sort_state.get(db_selected_op, ("id", True))
+            marker = "▲" if (col_key == cur_key and cur_asc) else ("▼" if col_key == cur_key else "")
+            return ft.TextButton(text=f"{text} {marker}".strip(), on_click=lambda e, ck=col_key: set_sort(ck))
+
+        rows: list[ft.DataRow] = []
+        for rec in items:
+            aid = rec.get("id")
+            date = rec.get("date")
+            title = rec.get("title") or ""
+
+            def open_detail(aid_local: int | None):
+                if aid_local is None:
+                    return
+                async def _open_task():
+                    await load_article_detail(int(aid_local))
+                page.run_task(_open_task)
+
+            # Cells: make ID and Title clickable
+            try:
+                aid_int = int(aid)
+            except Exception:
+                aid_int = None
+            id_cell = ft.DataCell(ft.TextButton(text=str(aid), on_click=lambda e, x=aid_int: open_detail(x)))
+            date_cell = ft.DataCell(ft.Text(str(date or "")))
+            title_cell = ft.DataCell(ft.TextButton(text=str(title), on_click=lambda e, x=aid_int: open_detail(x)))
+            rows.append(ft.DataRow(cells=[id_cell, date_cell, title_cell]))
+
+        table = ft.DataTable(
+            columns=[
+                ft.DataColumn(label=make_header_btn("ID", "id")),
+                ft.DataColumn(label=make_header_btn("Date", "date")),
+                ft.DataColumn(label=make_header_btn("Title", "title")),
+            ],
+            rows=rows,
+            data_row_max_height=48,
+            heading_row_height=48,
+            column_spacing=24,
+            sort_column_index=["id", "date", "title"].index(sort_key),
+            sort_ascending=asc,
+        )
+        count_text = ft.Text(f"Results: {len(items)}", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        db_results_col.controls = [count_text, table]
+
     def _show_db_list_view():
         db_detail_container.visible = False
         # controls area
         if db_selected_op == "combined":
             controls_row1 = ft.Row([db_comb_query])
-            controls_row2 = ft.Row([db_comb_limit, db_comb_preselect])
-            controls_row3 = ft.Row([ft.Text("Alpha"), db_comb_alpha, db_comb_exec])
-            db_controls_col.controls = [ft.Text("Combined Search", weight=ft.FontWeight.BOLD), controls_row1, controls_row2, controls_row3]
+            controls_row2 = ft.Row([db_comb_limit, db_comb_preselect, ft.Text("Alpha"), db_comb_alpha, db_comb_exec])
+            db_controls_col.controls = [ft.Text("Combined Search", weight=ft.FontWeight.BOLD), controls_row1, controls_row2]
         elif db_selected_op == "related":
             controls_row = ft.Row([db_rel_id, db_rel_method, db_rel_topn, db_rel_exec])
             db_controls_col.controls = [ft.Text("Related Articles", weight=ft.FontWeight.BOLD), controls_row]
@@ -329,6 +403,7 @@ def main(page: ft.Page):
             controls_row = ft.Row([db_get_id, db_get_exec])
             db_controls_col.controls = [ft.Text("Show Article by ID", weight=ft.FontWeight.BOLD), controls_row]
         # mount list view
+        _render_results_for_op()
         list_panel = ft.Column(controls=[db_controls_col, ft.Divider(), db_results_col], expand=True, spacing=10)
         db_main_container.content = list_panel
         page.update()
@@ -336,15 +411,61 @@ def main(page: ft.Page):
     def _show_db_detail_view(data: dict):
         # data is ArticleFull
         back_btn = ft.TextButton(text="Back", icon=ft.Icons.ARROW_BACK, on_click=lambda e: _show_db_list_view())
-        header = ft.Row([back_btn, ft.Text(str(data.get("title") or "Article"), weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.START)
-        meta_items = []
-        for key in ["id", "date", "release_number", "topic_name", "keywords", "tags", "summary", "source_link", "article_link"]:
-            val = data.get(key)
-            if val is None:
-                continue
-            meta_items.append(ft.Text(f"{key}: {val}"))
+        header = ft.Row([back_btn, ft.Text(str(data.get("title") or "Article"), weight=ft.FontWeight.BOLD, size=22)], alignment=ft.MainAxisAlignment.START)
+        # Top meta line: ID, Date, Release, Topic (with localized labels)
+        id_val = data.get("id")
+        date_val = data.get("date")
+        rel_val = data.get("release_number")
+        topic_val = data.get("topic_name")
+        top_meta = ft.Row([
+            ft.Text(f"ID: {id_val}"),
+            ft.Container(width=12),
+            ft.Text(f"Date: {date_val}") if date_val is not None else ft.Container(),
+            ft.Container(width=12),
+            ft.Text(f"№ выпуска: {rel_val}") if rel_val is not None else ft.Container(),
+            ft.Container(width=12),
+            ft.Text(f"Тема: {topic_val}") if topic_val else ft.Container(),
+        ], wrap=True, alignment=ft.MainAxisAlignment.START)
+
+        # Keywords
+        kw_controls: list[ft.Control] = []
+        if isinstance(data.get("keywords"), list) and data.get("keywords"):
+            kw_controls = [
+                ft.Text("Keywords:"),
+                ft.Row(controls=[ft.Chip(label=ft.Text(k)) for k in data.get("keywords")], spacing=6, wrap=True, run_spacing=6),
+            ]
+
+        # Tags as chips
+        tag_controls: list[ft.Control] = []
+        if isinstance(data.get("tags"), list) and data.get("tags"):
+            tag_controls = [
+                ft.Text("Tags:"),
+                ft.Row(controls=[ft.Chip(label=ft.Text(t)) for t in data.get("tags")], spacing=6, wrap=True, run_spacing=6),
+            ]
+
+        # Links
+        link_controls: list[ft.Control] = []
+        def link_btn(label: str, url: str) -> ft.Control:
+            return ft.TextButton(text=label, on_click=lambda e, u=url: page.launch_url(u))
+        src = data.get("source_link")
+        if isinstance(src, str) and src:
+            link_controls.append(link_btn("Source", src))
+        artl = data.get("article_link")
+        if isinstance(artl, str) and artl:
+            link_controls.append(link_btn("Article", artl))
+        extra = data.get("extra_links")
+        if isinstance(extra, dict):
+            for k, v in extra.items():
+                if isinstance(v, str) and v:
+                    link_controls.append(link_btn(str(k), v))
+        links_row = ft.Row(link_controls, wrap=True, spacing=8)
+
         body_text = ft.Text(str(data.get("body") or ""), selectable=True)
-        db_detail_container.content = ft.Column(controls=[header, ft.Divider(), *meta_items, ft.Divider(), body_text], spacing=8, scroll=ft.ScrollMode.AUTO)
+        db_detail_container.content = ft.Column(
+            controls=[header, top_meta, links_row] + kw_controls + tag_controls + [ft.Divider(), body_text],
+            spacing=8,
+            scroll=ft.ScrollMode.AUTO,
+        )
         db_detail_container.visible = True
         db_main_container.content = db_detail_container
         page.update()
@@ -375,14 +496,18 @@ def main(page: ft.Page):
             data_list = await asyncio.to_thread(client.articles_combined_search, q, limit, preselect, alpha)
         else:
             data_list = data.get("result") if isinstance(data, dict) else None
-        items = []
+        items_data: list[dict] = []
         if isinstance(data_list, list):
             for item in data_list:
                 if isinstance(item, dict):
-                    items.append(_render_article_meta_row(item))
-        if not items:
-            items = [ft.Text("No results")] 
-        db_results_col.controls = items
+                    # normalize minimal fields
+                    items_data.append({
+                        "id": item.get("id"),
+                        "date": item.get("date"),
+                        "title": item.get("title"),
+                    })
+        db_results_data["combined"] = items_data
+        _render_results_for_op()
         page.update()
 
     async def _exec_related():
@@ -396,14 +521,17 @@ def main(page: ft.Page):
         db_results_col.controls = [ft.Text("Loading..."), ft.ProgressRing()]
         page.update()
         lst = await asyncio.to_thread(client.articles_related, aid, method, topn)
-        items = []
+        items_data: list[dict] = []
         if isinstance(lst, list):
             for it in lst:
                 if isinstance(it, dict):
-                    items.append(_render_article_meta_row(it))
-        if not items:
-            items = [ft.Text("No results")] 
-        db_results_col.controls = items
+                    items_data.append({
+                        "id": it.get("id"),
+                        "date": it.get("date"),
+                        "title": it.get("title"),
+                    })
+        db_results_data["related"] = items_data
+        _render_results_for_op()
         page.update()
 
     async def _exec_keywords():
@@ -419,16 +547,19 @@ def main(page: ft.Page):
         db_results_col.controls = [ft.Text("Loading..."), ft.ProgressRing()]
         page.update()
         resp = await asyncio.to_thread(client.articles_search_keywords, keywords=kws, q=None, mode=mode, partial=partial, limit=limit)
-        items = []
+        items_data: list[dict] = []
         if isinstance(resp, dict):
             data_list = resp.get("result")
             if isinstance(data_list, list):
                 for it in data_list:
                     if isinstance(it, dict):
-                        items.append(_render_article_meta_row(it))
-        if not items:
-            items = [ft.Text("No results")] 
-        db_results_col.controls = items
+                        items_data.append({
+                            "id": it.get("id"),
+                            "date": it.get("date"),
+                            "title": it.get("title"),
+                        })
+        db_results_data["keywords"] = items_data
+        _render_results_for_op()
         page.update()
 
     async def _exec_get():
@@ -598,7 +729,6 @@ def main(page: ft.Page):
         nonlocal db_selected_op
         db_selected_op = name
         _update_db_menu_labels()
-        db_results_col.controls = []
         _show_db_list_view()
 
     def _update_db_menu_labels():
