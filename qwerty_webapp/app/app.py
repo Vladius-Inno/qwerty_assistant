@@ -642,6 +642,7 @@ def main(page: ft.Page):
             show_notice("Статья не найдена")
             return
         db_loader_row.visible = True
+        page.update()
         lst = await asyncio.to_thread(client.articles_related, aid, method, topn)
         items_data: list[dict] = []
         if isinstance(lst, list):
@@ -668,6 +669,7 @@ def main(page: ft.Page):
             show_notice("Статья не найдена")
             return
         db_loader_row.visible = True
+        page.update()
         resp = await asyncio.to_thread(
             client.articles_search_keywords,
             keywords=kws,
@@ -705,6 +707,7 @@ def main(page: ft.Page):
             show_notice("Статья не найдена")
             return
         db_loader_row.visible = True
+        page.update()
         lst = await asyncio.to_thread(
             client.articles_list,
             limit=limit,
