@@ -608,9 +608,50 @@ def main(page: ft.Page):
         db_detail_container.visible = True
         db_scroll_host.controls = [db_detail_container]
         page.update()
-    async def load_article_detail(article_id: int):
-        db_scroll_host.controls = [ft.Row([ft.Text("\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430..."), ft.Container(width=8), ft.ProgressRing()], alignment=ft.MainAxisAlignment.START)]
+
+    # Lightweight placeholder view for article details while loading
+    def _show_db_detail_placeholder():
+        back_btn = ft.TextButton(text="Назад", icon=ft.Icons.ARROW_BACK, on_click=lambda e: _show_db_list_view())
+        header = ft.Row(
+            [back_btn, ft.Text("Загрузка статьи...", weight=ft.FontWeight.BOLD, size=22), ft.Container(width=8), ft.ProgressRing()],
+            alignment=ft.MainAxisAlignment.START,
+        )
+        ph_bg = ft.Colors.with_opacity(0.12, ft.Colors.ON_SURFACE)
+        meta_row = ft.Row(
+            [
+                ft.Container(width=100, height=16, bgcolor=ph_bg, border_radius=4),
+                ft.Container(width=140, height=16, bgcolor=ph_bg, border_radius=4),
+                ft.Container(width=160, height=16, bgcolor=ph_bg, border_radius=4),
+                ft.Container(width=120, height=16, bgcolor=ph_bg, border_radius=4),
+            ],
+            wrap=True,
+            spacing=12,
+            alignment=ft.MainAxisAlignment.START,
+        )
+        chips_row = ft.Row(
+            [
+                ft.Container(width=80, height=22, bgcolor=ph_bg, border_radius=12),
+                ft.Container(width=120, height=22, bgcolor=ph_bg, border_radius=12),
+                ft.Container(width=100, height=22, bgcolor=ph_bg, border_radius=12),
+            ],
+            spacing=8,
+            wrap=True,
+        )
+        body_lines = [ft.Container(height=14, bgcolor=ph_bg, border_radius=4) for _ in range(12)]
+        body_area = ft.Container(
+            expand=True,
+            content=ft.Column(controls=body_lines, spacing=8, scroll=ft.ScrollMode.AUTO),
+        )
+        db_detail_container.content = ft.Column(
+            controls=[header, meta_row, chips_row, ft.Divider(), body_area],
+            spacing=8,
+            expand=True,
+        )
+        db_detail_container.visible = True
+        db_scroll_host.controls = [db_detail_container]
         page.update()
+    async def load_article_detail(article_id: int):
+        _show_db_detail_placeholder()
         art = await asyncio.to_thread(client.articles_get, article_id)
         if not art:
             show_notice("\u0421\u0442\u0430\u0442\u044c\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430")
@@ -618,10 +659,8 @@ def main(page: ft.Page):
         _show_db_detail_view(art)
 
     async def open_article_detail(article_id: int):
-        # Wrapper that ensures spinner is cleared and view restored on errors
-        spinner = ft.Row([ft.Text("\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430..."), ft.Container(width=8), ft.ProgressRing()], alignment=ft.MainAxisAlignment.START)
-        db_scroll_host.controls = [spinner]
-        page.update()
+        # Show placeholder layout while loading and ensure proper fallback on errors
+        _show_db_detail_placeholder()
         art = None
         try:
             art = await asyncio.to_thread(client.articles_get, article_id)
