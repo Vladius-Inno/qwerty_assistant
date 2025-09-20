@@ -1,43 +1,42 @@
-# app/services/llm.py
+from __future__ import annotations
+
 import os
-from typing import List, Dict, Optional
-from openai import AsyncOpenAI
 import json
+from typing import Dict, List, Optional
 
-from openai.types import ResponseFormatJSONObject
-from openai.types.chat.completion_create_params import ResponseFormat
+from openai import AsyncOpenAI
 
-# клиент инициализируется один раз
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+_client: Optional[AsyncOpenAI] = None
+
+
+def _get_client() -> AsyncOpenAI:
+    global _client
+    if _client is not None:
+        return _client
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set; cannot call LLM")
+    _client = AsyncOpenAI(api_key=api_key)
+    return _client
 
 
 async def call_llm(
-        messages: List[Dict[str, str]],
-        model: str = "gpt-4o-mini",
-        temperature: float = 1,
-        max_completions_tokens: Optional[int] = None,
+    messages: List[Dict[str, str]],
+    model: str = "gpt-4o-mini",
+    temperature: float = 1,
+    max_completions_tokens: Optional[int] = None,
 ):
-    """
-    Вызов LLM модели.
-
-    messages: список сообщений в формате [{"role": "system"/"user"/"assistant", "content": "..."}]
-    model: название модели (по умолчанию gpt-4o-mini)
-    temperature: креативность
-    max_tokens: ограничение длины ответа
-    """
-
+    """Call OpenAI chat completions and return parsed content when JSON."""
+    client = _get_client()
     resp = await client.chat.completions.create(
         model=model,
         messages=messages,
         temperature=temperature,
         max_completion_tokens=max_completions_tokens,
-        # response_format={ "type": "json_object" }
     )
-
     content = resp.choices[0].message.content
     try:
-        content = json.loads(content)
-    except ValueError as e:
+        return json.loads(content)
+    except Exception:
         return content
 
-    return content
