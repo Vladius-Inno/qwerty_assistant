@@ -6,9 +6,9 @@ services:
     env_file:
       - .env
     environment:
-      ROOT_PATH: /qwerty
-    ports:
-      - "8000:8000"
+      ROOT_PATH: /qwerty/api
+    expose:
+      - "8000"
     depends_on:
       - db
 
