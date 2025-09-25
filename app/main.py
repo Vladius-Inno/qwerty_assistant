@@ -37,7 +37,10 @@ async def lifespan(app: FastAPI):
         await close_db()
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    root_path=os.getenv("ROOT_PATH", "")
+)
 app.include_router(articles.router)
 app.include_router(auth_api.router)
 app.include_router(agent_api.router)

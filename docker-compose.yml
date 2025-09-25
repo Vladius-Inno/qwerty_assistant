@@ -5,6 +5,8 @@ services:
     restart: always
     env_file:
       - .env
+    environment:
+      ROOT_PATH: /qwerty
     ports:
       - "8000:8000"
     depends_on:
@@ -17,6 +19,7 @@ services:
       POSTGRES_USER: qwerty
       POSTGRES_PASSWORD: qwerty
       POSTGRES_DB: archive_db
+      
     volumes:
       - pgdata:/var/lib/postgresql/data
 
